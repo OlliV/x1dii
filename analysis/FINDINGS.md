@@ -101,3 +101,47 @@ download.
    `update-binary` is the actual inflater.
 3. Alternative: obtain `/system` from a device (`adb` in non-production mode,
    or the DJI FTP channel) — bypasses the container question entirely.
+
+---
+
+## Addendum — reversing the OTA `update-binary` (2026-11-04)
+
+`update-binary` (607,224 bytes, identical size to the 1.0.0 copy) is a statically
+linked ARM32 build of the Android 6 OTA updater:
+
+| evidence | meaning |
+|---|---|
+| `bootable/recovery/minzip/Zip.c` strings | minzip is the zip reader |
+| `minzip: Call to inflateInit2 failed` | raw inflate, `inflateInit2(-MAX_WBITS)` |
+| `1.2.8` | zlib version |
+| `IMGDIFF2`, `BSDIFF40`, `failed to read chunk %d deflate header data` | applypatch/imgdiff support is linked in |
+| no `inflateSetDictionary` path in stock minzip | dictionary-compressed entries are *not* expected |
+
+So the stock extraction path cannot use a preset dictionary — which weakens the
+imgdiff/dictionary theory for these entries.
+
+Two observations that matter more:
+
+1. **Decryption is definitely correct.** `file_contexts` decrypts to valid
+   SELinux policy text (`#line 1 "external/sepolicy/file_contexts" …`), and
+   `metadata` / `MANIFEST.MF` / `CERT.SF` / `CERT.RSA` all verify by CRC-32.
+2. **The central directory has been altered after the zip was built.** Entry
+   `META-INF/com/google/android/updater-script` has 8 bytes of its name replaced
+   by random data and its local-header offset field is garbage
+   (`0x45c562fa`); every other entry's offset resolves to a real local header.
+
+That combination — correct outer decryption, intact structural metadata, but
+individual payload streams that fail at their first match while others decode
+perfectly — points at selective scrambling of specific regions rather than a
+whole-item cipher.
+
+### Revised next steps
+
+1. Reverse `upgraded`'s item handling (`Cim::FileReader`, `Cim::EncryptedFileReader`
+   vs `UnencryptedFileReader`, 0x14894 / 0x13a00 / 0x193c4) — the container
+   explicitly distinguishes encrypted from unencrypted *items*, so a per-item or
+   per-region transform is the most likely missing step.
+2. Diff a clean 1.0.0 OTA (public dump) against 1.5.2 to see whether entries were
+   already wrapped in 1.0.0 — the 1.0.0 `system.new.dat`/`vendor.new.dat` are in
+   the public dump and start with `09 00 00 00 0a 00 00 00 …`, not deflate.
+3. Device route (ADB/FTP) remains the reliable bypass.
