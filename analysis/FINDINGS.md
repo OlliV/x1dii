@@ -145,3 +145,28 @@ whole-item cipher.
    already wrapped in 1.0.0 — the 1.0.0 `system.new.dat`/`vendor.new.dat` are in
    the public dump and start with `09 00 00 00 0a 00 00 00 …`, not deflate.
 3. Device route (ADB/FTP) remains the reliable bypass.
+
+## Addendum 2 — payload streams are real deflate, but break mid-stream
+
+Decoding the `update-binary` entry (data at `0x683`) produced concrete evidence:
+
+* Its first 16 bytes are byte-identical to a **fresh `zlib.compressobj(6, -15)` of the
+  1.0.0 `update-binary`** (`8cbc097c53c5f638…`). The entry is ordinary deflate.
+* Feeding it with a 32 KiB pre-filled window decodes **143,024 bytes of real ARM
+  code** that matches the 1.0.0 binary up to offset 316 — exactly where the two
+  builds' BuildIDs differ (`c001c784…` vs `e1eb79a7…`). So the plaintext is right.
+* Without a pre-filled window, zlib reports `invalid distance too far back` after
+  10,923 bytes of output — the stream references history *before* its start.
+* With a window, decoding stops at input byte 98,126 with `invalid literal/lengths
+  set` — a structural (Huffman) break, independent of what the window contains.
+* `system.new.dat` behaves the same way: 6,372,076 bytes of (mostly zero) output,
+  then `invalid stored block lengths` at input 16,877.
+
+Chunked-CBC with IV resets (11 candidate chunk sizes), 4/8/16-byte insertions at the
+break, and per-entry preset dictionaries (zeros, 0xFF, private header, item table,
+1.0.0 `update-binary`) were all tested and ruled out.
+
+Interpretation: these entries were compressed with a **history/dictionary that is not
+stored in the package** (imgdiff-style), and additionally the decodable prefix ends
+at a hard structural break. Recovering them needs either the base image the packer
+used, or a device-side `/system` copy.
