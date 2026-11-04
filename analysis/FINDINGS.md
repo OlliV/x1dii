@@ -170,3 +170,192 @@ Interpretation: these entries were compressed with a **history/dictionary that i
 stored in the package** (imgdiff-style), and additionally the decodable prefix ends
 at a hard structural break. Recovering them needs either the base image the packer
 used, or a device-side `/system` copy.
+
+---
+
+## Addendum 3 — X1D II GUI architecture (from the 1.0.0 dump)
+
+`system.img/bin/victory-gui-static` (20.6 MB, ARM32, stripped):
+
+| fact | evidence |
+|---|---|
+| Qt 5.11.1, **static** build | `Qt 5.11.1 (arm-little_endian-ilp32-eabi static release build…)` |
+| dynamically linked only to platform libs | `libduml_util/frwk/hal`, `libwayland-client`, `libxkbcommon`, `libz`, `libc++/c` |
+| QML is **compiled to C++** (Qt Quick Compiler) | no `.qml` sources, no `qv4jsc`/qmlcache magic, no zlib-compressed QML resources |
+| only QML *names* survive | `SettingsGeneric.qml`, `AutoFocus.qml`, `EVFWindow.qml`, `displaytest.qml`, `keytest.qml` as registration strings |
+| C++ popover framework | `PopoverDriveMode`, `PopoverExposureMode`, `PopoverFocusMode`, `PopoverMeterMethod`, `PopoverWhiteBalance`, `PopoverError` |
+| capability-gated features | `CapabilityFlag` enum incl. `CapabilityVideoMode`, `CapabilityContinuousDrive`, `CapabilityHasBmode/Tmode` |
+| video plumbing exists | `VideoProxyUI`, `toggle_video_recording()`, `E_CameraMode_Video`, `E_DialMode_Video`, video icons |
+
+Consequence: the X2D route (drop QML units on disk + flip a menu-cache pointer) does **not**
+port. X1D II has no QML on disk; the UI is ARM code. Adding a page/entry means either
+patching `victory-gui-static` or hooking it at runtime (LD_PRELOAD is viable — the
+binary is dynamically linked to libc and the duml libs).
+
+Non-UI features (startup logo, service trimming, governor, boot scripts) remain
+script/config work in `/system` and need no GUI patch.
+
+---
+
+## Addendum 4 — sensor stream profile and video capability (1.0.0 image)
+
+`system.img/etc/imx161f_ec1704.sp` (24 KB JSON, plaintext) is the whole pipeline
+description. Profile `imx161_with_fpga`, seven stream groups:
+
+| group | streams |
+|---|---|
+| `still_r43_cap` | liveview 1280×960 / 1024×768 (LCD) / 640×480 (CFV) / 960×720 / 1440×1080 (HDMI), RGBA8888; RAW16 2756×1240, 2816×1260, 1280×576; still 4136×3100 YUV8_SP422; still_raw 8384×6304 RAW16 |
+| `still_r43_jandr_cap`, `_jpeg_cap` | still_yuv 8256×6200 YUV8_SP422, raw pipeline, `plat_imgtec_rst` JPEG encoder |
+| `still_r43_raw_playback`, `_normal_raw_pattern` | raw playback / raw pattern |
+| `video_1080P@2997` | yuv_piv 2756×1552 YUV8_SP420 (dzoom filter) → video 1920×1080 |
+| `video_2720P@2997` | same source → video 2720×1530 |
+
+Every video stream is `DUSS_PIXFMT_YUV8_SP420_YUV` — **8-bit, 4:2:0**. There is no
+10-bit pixel format anywhere in the video path. The encoder can do 10-bit
+(`422SP10`, `hlg10_enable`), but the ISP/FPGA never produces it.
+
+### ProRes
+
+* kernel module `proresenc_mod.ko`, `dji,eagle-proresenc` driver
+* userspace `proresenc` (30 KB): `-w -h -p profile -T type`, profiles 0–5 =
+  422HQ / 422 / 422LT / 422Proxy / 4444 / 4444XQ; pixel formats 422SP8, 422SP10,
+  444P8, 444P10; types 4K / SPLICE8K / 8K
+* `libproresenc.so`, `lib/modules/proresenc_mod.ko`
+
+References to ProRes in `camera`, `camservice`, `victory-gui-static`: **zero**.
+The stack is present but entirely unwired.
+
+### Video resolutions available
+
+The only video source is 2756×1552. Anything wider (4K 3840) is impossible without
+a new sensor readout mode; the still sensor can do 8384×6304 but not at 29.97 fps.
+
+---
+
+## Addendum 5 — how encoding is actually wired
+
+`/system/etc/dji.json` (119 KB, runtime config) contains a HAL device table:
+
+```json
+{"name": "/dev/proresenc", "attach": "duss_hal_attach_dji_plenc",  "detach": "..."},
+{"name": "/dev/venc0",     "attach": "duss_hal_attach_imgtec_venc", "detach": "..."},
+{"name": "/dev/venc1",     "attach": "duss_hal_attach_imgtec_venc", "detach": "..."}
+```
+
+So the ProRes encoder device is **registered and attachable at runtime**, alongside the
+two imgtec H.264 encoders.
+
+| layer | evidence |
+|---|---|
+| `libduml_frwk.so` | `wl_codec_venc.c`, `duss_wl_channel_create_codec`, `codec_rate_ctrl:set %d bps` — the video encoder channel |
+| `libduml_hal.so` | `duss_hal_attach_imgtec_venc`, `duss_hal_venc_encfrm`, **plus** `ProresEnc_Init/EncodeFrame/Deinit/GetErrTips` and codec-name strings `prores`, `prores_splice8k`, `prores_8k`, `unsupported codec %s!` |
+| `libduml_media.so` | `duss_hal_device_open(venc0)`, `duss_hal_device_start(h264)` — H.264 named explicitly |
+| `bin/test_hal_plenc` | factory test for the ProRes encoder HAL |
+
+`etc/venc_test/*.json` are fixtures for `test_imgtec_venc`, not runtime configuration.
+
+### Codec verdicts
+
+* **HEVC** — hardware can do it (`libomx_vxd.so`), but no `h265`/`hevc` string exists in the
+  framework or HAL; the wrapper starts `h264` by name. Would need code changes.
+* **ProRes** — HAL device registered in `dji.json`, library linked, API present, factory test
+  shipped. Not used by the video path. Missing: 4:2:2 frames (ProRes takes 422SP8/422SP10/
+  444P8/444P10; the video pipe is 420) and MOV muxing (`libduml_media` has libavformat).
+  The ISP can already emit `YUV8_SP422` — the still path does.
+
+---
+
+## Addendum 6 — `test_hal_plenc`: the working ProRes call sequence
+
+Imports (2.3 KB of Thumb-2 code, stripped) and their call sites give the full contract:
+
+| step | API |
+|---|---|
+| 1 | `duss_log_initialize`, `duss_hal_initialize` |
+| 2 | `duss_hal_device_open` (plenc device) |
+| 3 | `duss_hal_device_start(handle, 0)` |
+| 4 | `duss_hal_mem_alloc` + `duss_hal_mem_map` ×2 (frame buffer, stream buffer) |
+| 5 | `duss_hal_attach_ion_mem` (import guest memory) |
+| 6 | loop: `duss_hal_plenc_encfrm(...)` per frame |
+| 7 | `duss_hal_mem_free`, `duss_hal_device_stop`, `duss_hal_device_close`, `duss_hal_deinitialize` |
+
+CLI contract:
+
+```
+test_hal_plenc -i inFile -s statFile -w width -h height [-o outFile]
+               -p profile(0-5)  -t 422SP8|422SP10|444P8|444P10
+               -c color  -T type(0-2)  -F fps
+```
+
+* input is a **raw YUV file**, width/height must be 8-aligned
+* pixel formats accepted: **422SP8, 422SP10, 444P8, 444P10** — 422 semi-planar or
+  444 planar only. There is **no 4:2:0** input path.
+* profiles 0-5 = 422HQ / 422 / 422LT / 422Proxy / 4444 / 4444XQ
+
+### What this means for the camera
+
+The video pipe emits `YUV8_SP420_YUV`. To feed the ProRes encoder it must become
+`422SP8` (or 10-bit `422SP10`). The ISP already produces `YUV8_SP422` for the still
+path, so a 4:2:2 node at video rates is plausible; otherwise a chroma upsample step
+is needed. Muxing is covered: `libduml_media` carries libavformat.
+
+Bandwidth check at 2720×1530: 422SP8 ≈ 8.3 MB/frame ≈ 250 MB/s at 29.97 fps;
+ProRes 422HQ ≈ 440 Mbps ≈ 55 MB/s to the card — both comfortable.
+
+---
+
+## Addendum 7 — `duss_hal_plenc_encfrm` contract (libduml_hal.so)
+
+`libduml_hal.so` keeps its symbols; the ProRes path is `hardware/dji/duml/hal/codec/plenc/dji_plenc.c`.
+
+Export table:
+
+| symbol | addr | size |
+|---|---|---|
+| `duss_hal_plenc_encfrm` | 0xbd4c | 72 |
+| `duss_hal_attach_dji_plenc` | 0x231b4 | 204 |
+| `duss_hal_device_open` | 0xb614 | 528 |
+| `duss_hal_mem_alloc` | 0xaab0 | 96 |
+
+`duss_hal_plenc_encfrm(handle, frame)` is a thin wrapper:
+
+```
+ctx = handle->0x2c            // private ops, set by attach
+if (!ctx->0) return -0x3f1
+lock(handle->0xc)
+if ((handle->flags & 2) == 0) return err   // must be started
+ret = ctx->0(handle, frame)                // real encoder
+unlock
+```
+
+The real encoder (`0x22f1c`) checks the frame descriptor:
+
+```
+w = ctx->0x14c ; h = ctx->0x150
+if (frame->size != w*h) -> "stat buf length ... isn't correct"
+```
+
+so the descriptor is at least:
+
+| offset | meaning |
+|---|---|
+| +0x00 | pointer to buffer struct |
+| +0x04 | offset within buffer |
+| +0x08 | size in pixels (must equal width×height) |
+
+and the buffer struct carries the DMA handle at +0x0c and plane addresses at
++0x28 / +0x2c / +0x3c / +0x4c (Y / Cb / Cr, matching 422 semi-planar or 444 planar).
+
+Inside, the HAL calls `ProresEnc_Init` / `ProresEnc_EncodeFrame` from
+`libproresenc.so` and needs:
+
+* frame buffer — physical address (`get base phy addr of frame buffer fail!`)
+* stream buffer — physical + virtual address
+* stat buffer — length must be width×height (`stat buf length(%d) isn't correct, should be %d x %d!`)
+
+### Status
+
+The call contract is now known end to end. Remaining gap is configuration: where
+width/height/profile/pixel-format are handed to `ProresEnc_Init` (likely the 0x15c-byte
+struct passed through `duss_hal_attach_dji_plenc`), and the 4:2:0 → 4:2:2 conversion
+for the video pipe's `YUV8_SP420_YUV` frames.
