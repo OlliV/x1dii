@@ -248,3 +248,34 @@ buffers, independent of the camera pipeline.
 
 Related notes: `analysis/FINDINGS.md` (container decryption, firmware structure, GUI
 architecture), `analysis/cim_unpack.py` (offline CIM decryptor).
+
+---
+
+## 10. 1.5.2 audit (post-extraction)
+
+**Encoder contract is unchanged in the shipping firmware.** `libduml_hal.so` 1.5.2 has
+the same `duss_hal_plenc_encfrm` (72 B, `0xbd4c`) and `duss_hal_attach_dji_plenc`
+(204 B) as 1.0.0 — only the attach address moved (`0x231b4` → `0x23214`). Everything in
+§4 applies to 1.5.2 as written.
+
+**Video UI in 1.5.2.** The GUI exposes exactly two video resolutions:
+
+```
+"2.7K, 2720x1530, 29.97 fps"
+"Full HD, 1920x1080, 29.97 fps"
+```
+
+with enum names `E_Resolutions_PreviewVid1080` / `E_Resolutions_PreviewVid720`.
+
+The two extra stream groups 1.5.2 ships (`video_1240P@2997` 2756×1240 and
+`video_2064P@2997` 2756×2064) have **no UI labels at all** — they are pipeline support
+without a user-facing option. That is a useful precedent: the firmware already contains
+video modes the menu never offers.
+
+**Not config-driven.** The GUI references no `/system` config for video settings; the
+options are compiled (Qt Quick Compiler). There is no `PopoverVideo` — video settings
+live in a settings page driven by `VideoProxyUI`.
+
+**Implication for ProRes.** Adding a codec choice means either a binary patch to the
+settings-page model, or a runtime hook — the same conclusion as §5/§6, now confirmed
+against the final firmware. The encoder side needs no new work.

@@ -404,3 +404,71 @@ central-directory entry" in `§Addendum 1`, and the unreadable-first-block note 
 | 10-bit | absent in 1.5.2, confirmed at the pipeline-config level |
 | ProRes | `libduml_hal.so` 14 refs, `dji.json` registers `/dev/proresenc`, GUI 0 refs — still unwired |
 | GUI | 22,259,956 B (1.0.0: 20,617,428), has `2.7K, 2720x1530, 29.97 fps` and video UI strings |
+
+---
+
+## Addendum 9 — USB composite of a live X1D II (firmware 1.5.2)
+
+Enumerated over USB (VID `0x2756`, PID `0x0007`, serial `VQ20200944`, bcdDevice 4.04):
+
+| # | class | endpoints | what |
+|---|---|---|---|
+| 0 | `e0/01/03` | `0x82` int | RNDIS control |
+| 1 | `0a/00/00` | `0x81`, `0x01` bulk | RNDIS data |
+| 2 | `08/06/50` | `0x83`, `0x02` bulk | mass storage (SD ×2 + HBMANUAL) |
+| 3 | `ff/00/00` | `0x03`,`0x04` OUT · `0x84`,`0x85` IN | **vendor bulk = DUML channel** |
+| 4 | `02/02/01` | `0x87` int | CDC ACM control |
+| 5 | `0a/00/00` | `0x86`, `0x05` bulk | CDC ACM data |
+
+Interface 3 claims cleanly with libusb and is **silent** until the host initiates — no
+unsolicited traffic on `0x84`/`0x85`.
+
+DUML framing lives in `libduml_frwk.so`; the packers (crc8_append + crc16_append) are at
+`0x22196`, `0x3ec34`, `0x49e9a`, with verify counterparts at `0x2220e`, `0x400f6`,
+`0x49c6c`. Deriving the header layout from those is the next step before any frame is sent.
+
+macOS note: RNDIS (interfaces 0/1) does not bind — no network route from this host, so
+`dji_ftpd` (TCP 21) is unreachable over USB. The vendor bulk channel is the only path.
+
+---
+
+## Addendum 10 — USB channel probe and what Phocus reveals
+
+Probing the vendor bulk interface (intf 3) with libusb on macOS:
+
+| action | result |
+|---|---|
+| claim interface 3 | succeeds when Phocus is not running, `Errno 13` when it is |
+| read `0x84` / `0x85` idle | silent, no unsolicited traffic |
+| write `0x03` | times out (no reader behind that endpoint) |
+| write `0x04` | accepted |
+| crafted heartbeat / device-type frames | accepted, **no response** |
+
+Frames were built from `CFiProtocol`'s own assembler (CRC8 table extracted and byte-identical
+to poly 0x8C; CRC16 seed 0x3692), so the encoding matches — the silence is a state or
+semantics gap, not a checksum error.
+
+Phocus's own stderr log (running the app from a terminal) is more informative than the
+frames would be for API shape:
+
+```
+Device Arrived USB 0x2756 0x7
+CCameraDeviceUSBx::WriteParameter(Device:TetheredMode) returned 80c80001
+CameraUSB: Timeout waiting for response!
+CameraUSB: Action(FocusPositionUpdate) failed 0x80d60008
+ReadParameter(Device:FaceDetection) failed 80d60006
+Image Appeared id: 7735 ... 3FR
+ReadData((4 7735) 0 8388608) took 0.099 s
+Action(UnlockCamera) failed 0x80c80001
+```
+
+So the API is **name-addressed**: `WriteParameter(name)`, `ReadParameter(name)`,
+`Action(name)`, `ReadData(id, offset, len)`. Tethering is a parameter write, not a mode
+switch — and it reports "not supported" while everything else works, which is why
+re-toggling tether mode had no effect on the bulk channel.
+
+Still missing: the byte encoding of a request (payload layout for a named parameter).
+
+Next: capture on a TCP transport. The camera's Wi-Fi exposes 80/443 (Phocus HTTP) when
+reachable; desktop Phocus does not use Wi-Fi, so the capture would need Phocus Mobile.
+Otherwise, reverse `CCameraDeviceUSBx::ReadParameter` / `WriteParameter` directly.
