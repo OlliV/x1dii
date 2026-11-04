@@ -27,7 +27,7 @@ of concept, then pipeline work.
 
 | Item | Value | Source |
 |---|---|---|
-| Video modes | 2720×1530, 1920×1080 @ 29.97 | fw 1.2.0 notes, `.sp` profile |
+| Video modes | 2720×1530, 1920×1080 @ 29.97 (1.2.0+) plus 2756×1240 and 2756×2064 in 1.5.2 | fw notes, `.sp` profiles |
 | Codec | H.264 | `duss_hal_device_start(h264)` |
 | Colour | 4:2:0 8-bit | fw 1.2.0 notes, `DUSS_PIXFMT_YUV8_SP420_YUV` |
 | Stream profile | `video_1080P@2997`, `video_2720P@2997` | `/system/etc/imx161f_ec1704.sp` |
@@ -44,7 +44,7 @@ sensor/FPGA modes.
 |---|---|---|
 | H.264 encode | `/dev/venc0`, `/dev/venc1` → `duss_hal_attach_imgtec_venc` | ✅ |
 | HEVC encode/decode | HEVC paths in `libomx_vxd.so` | ❌ (no `h265`/`hevc` string in HAL or framework) |
-| 10-bit pixel formats | VXD format strings; `hlg10_enable` / `bitdepth_opt` in venc fixtures | ❌ (pipeline is YUV8) |
+| 10-bit pixel formats | VXD format strings; `hlg10_enable` / `bitdepth_opt` in venc fixtures | ❌ confirmed absent in the 1.5.2 `.sp` (YUV8 only) |
 | 4K30 encode | `etc/venc_test/venc_4kUHD_test.json` (3840×2160 @ 150 Mbps) | ❌ (no 4K source) |
 | **ProRes** | see §4 | ❌ |
 
@@ -139,9 +139,9 @@ Option A should be investigated first because it avoids new pipeline code entire
 
 ## 6. Gaps and open questions
 
-1. **Configuration struct** — where width/height/profile/pixel format reach
-   `ProresEnc_Init`. Likely the `0x15c`-byte struct passed through
-   `duss_hal_attach_dji_plenc`; one more function to read.
+1. **Configuration struct** — partially mapped (see §6.1). `ProresEnc_Init` is called as
+   `(cfg, stat, &handle)` from `libduml_hal.so` `0x22e2c`; the remaining unknown is which
+   upstream field supplies width and height.
 2. **Rate control** — what `stat` buffer contents the encoder expects (all-zero is what
    `test_hal_plenc` uses with a stat *file*; the CLI warns "if using default stat, rate
    control will be very bad").
@@ -149,11 +149,56 @@ Option A should be investigated first because it avoids new pipeline code entire
    until tested on a device.
 4. **Muxing** — `libduml_media` carries libavformat, but the MOV/ProRes muxer path is
    unproven on this build.
-5. **UI** — the 1.5.2 GUI is compiled (Qt Quick Compiler) and its image is still locked
-   inside the dictionary-compressed CIM. Exposing ProRes in the menu needs a binary patch
-   or a runtime hook.
+5. **UI** — the 1.5.2 system image is now extractable (see `FINDINGS.md` addendum 8), and
+   the GUI is *still* compiled (Qt Quick Compiler), so exposing ProRes in the menu needs a
+   binary patch or a runtime hook regardless.
 6. **Is `/dev/proresenc` present in 1.5.2?** Registered in `dji.json` in 1.0.0; verify on
    device (`ls /dev | grep prores`, `grep prores /system/etc/dji.json`).
+
+### 6.1 Config struct (progress)
+
+`ProresEnc_Init(cfg, stat, &handle)` is called from `libduml_hal.so` `0x22e2c`:
+
+```
+r0 = ctx + 0x100     // config struct
+r1 = ctx + 0x13c     // stat buffer
+r2 = ctx + 0x158     // encoder handle out
+```
+
+Config struct layout (offsets from `ctx+0x100`), filled from a device config struct `src`:
+
+| Offset | Source | Meaning (working hypothesis) |
+|---|---|---|
+| `+0x00` | string compare on `src[0]` | profile selector, 0/1/2 |
+| `+0x04` | `src+0x14` | dimension A |
+| `+0x08` | `src+0x18` | dimension B |
+| `+0x0c` | `src+0x08` | plane/stride or bitrate |
+| `+0x10` | `src+0x04`, mapped | pixel format: `0x67`→0, `0x44f`→1, `0xca`→2, `0x4b2`→3 |
+| `+0x14` | `src+0x0c` | |
+| `+0x18` | `src+0x10` | |
+| `+0x24` | `src+0x1c` (byte) | |
+| `+0x28` | `src+0x20` | |
+
+`ProresEnc_EncodeFrame(handle, frame_info, …)` is called at `0x230a2`, with the handle
+loaded from `ctx+0x158`. Extra arguments are passed on the stack (`sp+0x14`, `sp+0x1c`).
+
+So the HAL already plumbs profile, format and two dimensions from the device config —
+the remaining question is which upstream field is width vs height, and whether the DUSS
+stream config can supply 4:2:2.
+
+| Phase | Work | Gate |
+|---|---|---|
+| 0 | Finish RE: config struct for `ProresEnc_Init` | struct documented; descriptor offsets confirmed |
+| 1 | Device proof: run `test_hal_plenc` with a 2720×1530 422SP8 YUV file | valid `.prores` file, plays back |
+| 2 | Determine 422 availability at video rate (`.sp` + `farmus`) | either option A or B chosen |
+| 3 | Pipeline node: video frames → plenc, MOV mux | 10 s clip records and plays |
+| 4 | UI exposure (patch or hook) | mode selectable from camera menu |
+| 5 | Hardening: thermal, storage speed, battery, restore path | sustained 5 min record, reversible install |
+
+Phase 1 is the decisive one: it proves the encoder works on *this* silicon with *our*
+buffers, independent of the camera pipeline.
+
+---
 
 ---
 
@@ -161,7 +206,7 @@ Option A should be investigated first because it avoids new pipeline code entire
 
 | Phase | Work | Gate |
 |---|---|---|
-| 0 | Finish RE: config struct for `ProresEnc_Init` | struct documented; descriptor offsets confirmed |
+| 0 | Finish RE: config struct for `ProresEnc_Init` | **done — §6.1** |
 | 1 | Device proof: run `test_hal_plenc` with a 2720×1530 422SP8 YUV file | valid `.prores` file, plays back |
 | 2 | Determine 422 availability at video rate (`.sp` + `farmus`) | either option A or B chosen |
 | 3 | Pipeline node: video frames → plenc, MOV mux | 10 s clip records and plays |

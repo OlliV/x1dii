@@ -359,3 +359,48 @@ The call contract is now known end to end. Remaining gap is configuration: where
 width/height/profile/pixel-format are handed to `ProresEnc_Init` (likely the 0x15c-byte
 struct passed through `duss_hal_attach_dji_plenc`), and the 4:2:0 → 4:2:2 conversion
 for the video pipe's `YUV8_SP420_YUV` frames.
+
+---
+
+## Addendum 8 — CORRECTION: the payload is chunked CBC, not one chain
+
+Every earlier "corruption", "tampered CD entry", "dictionary-compressed deflate" and
+"structural break" in this document was an artifact of decrypting the body as a single
+CBC chain. The container restarts the IV every 4096 bytes.
+
+```
+key = 93f82ca244ab29e0366934d56713eea2
+iv  = bd972536e78e1c3ebf385e01ae4adb52      (fixed, restarted every 4096 bytes)
+```
+
+Chunk grids are **per item**: the header region is anchored at the body start, and each
+item's grid is anchored at that item's first byte. A global grid corrupts the first
+16-byte block of every chunk — one block per 4 KiB — which is exactly what broke the
+deflate streams.
+
+How it was found: the camera was connected over USB and exposes the `HBMANUAL`
+partition. Comparing our extracted manual PDF with the camera's own copy showed 846
+differing runs, all 16 bytes and all 4096 bytes apart. Solving
+`IV = P_true XOR P_wrong XOR C_prev` gave the same value for every run.
+
+Verified: the PDF extracted from the CIM is **byte-identical** to the file on the
+camera (`sha256 ffc59b66…`).
+
+With the corrected scheme:
+
+* all **17/17** OTA entries extract with valid CRC-32
+* `system.new.dat` (243,724,288 B) → `system.img` (256 MiB ext4) builds cleanly
+* `analysis/cim_unpack.py` reproduces it (`extract` mode)
+
+Superseded claims: `§Addendum 2` (dictionary-compressed deflate), the "tampered
+central-directory entry" in `§Addendum 1`, and the unreadable-first-block note in §1.
+
+### What 1.5.2 actually contains
+
+| item | finding |
+|---|---|
+| video groups | `video_1080P@2997`, `video_2720P@2997`, **`video_1240P@2997` (2756×1240)**, **`video_2064P@2997` (2756×2064)** |
+| pixel formats | `YUV8_SP420_YUV` (video), `YUV8_SP422_YUV` (stills), `RGBA8888`, `RAW16` — **no 10-bit format anywhere** |
+| 10-bit | absent in 1.5.2, confirmed at the pipeline-config level |
+| ProRes | `libduml_hal.so` 14 refs, `dji.json` registers `/dev/proresenc`, GUI 0 refs — still unwired |
+| GUI | 22,259,956 B (1.0.0: 20,617,428), has `2.7K, 2720x1530, 29.97 fps` and video UI strings |
