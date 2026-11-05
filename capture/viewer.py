@@ -118,6 +118,7 @@ class App:
         self._last_frame_time = time.time()
         self._epoch = 0
         self._synced = False
+        self.downloading = False
         self._live_refused = False
         self._mode = None
         self._refused_since = 0.0
@@ -519,9 +520,15 @@ class App:
                 try:
                     self._say("downloading capture ...")
                     dest = os.path.join(self.download_dir, "capture_%04x.3fr" % token)
-                    with self.lock:
-                        n = self.cam.download(token, dest)
-                    self._log("capture: saved %s (%d bytes)" % (dest, n))
+                    self.downloading = True      # stop the preview stealing 0x84
+                    time.sleep(0.4)              # let the reader notice and stand down
+                    try:
+                        with self.lock:
+                            n = self.cam.download(token, dest)
+                    finally:
+                        self.downloading = False
+                    self._log("capture: saved %s (%d bytes, expected %r)"
+                              % (dest, n, getattr(self.cam, "last_download_expected", None)))
                     self._saved_path = dest if n else None
                 except Exception as e:
                     self._log("capture: download failed %s" % e)
@@ -551,8 +558,8 @@ class App:
                 epoch = self._epoch
                 buf = b""
                 self._synced = False
-            if self.cam is None:
-                time.sleep(0.2)
+            if self.cam is None or self.downloading:
+                time.sleep(0.05)      # a download owns 0x84 while it runs
                 continue
             try:
                 buf += bytes(self.cam.dev.read(hbctl.EP_DATA, 1 << 18, timeout=80))

@@ -315,6 +315,29 @@ Two things that are easy to get wrong, both found the hard way:
   it is *not* sufficient on its own: in S the aperture still reports a real value, so the
   mode number has to drive which control is available.
 
+## 9f. The transfer stream is not self-delimiting
+
+Three things must be true of a client that writes the downloaded bytes to a file. Getting
+any of them wrong produces a `.3FR` that looks plausible — it has a valid TIFF header and
+may even preview in the Finder — but no raw converter will open it.
+
+1. **Nothing else may read `0x84` while the transfer runs.** It is the same endpoint as the
+   live view. A preview reader competing with the download steals bytes out of the middle:
+   files arrive truncated, or beginning mid-frame (`not a TIFF`).
+2. **The stream may start with a stray preview frame.** Resync on the TIFF header
+   (`II*\0` / `MM\0*`) rather than assuming the first byte belongs to the file.
+3. **Stop at the length the TIFF declares.** The camera keeps sending past the end of the
+   file; a naive "read until quiet" loop appends tens of megabytes of junk. A 3FR declares
+   its own size: IFD0's strips plus the strips of each SubIFD listed in tag 330, taking the
+   largest `offset + bytecount`.
+
+A healthy file has `file size == declared extent`, to the byte. `lib/hbctl.py` implements
+this as `tiff_extent()` plus resync in `download()`; the viewer pauses its reader via
+`self.downloading` for the duration.
+
+Observed sizes on an X1D II 50C: raw SubIFD is 8384x6304 uncompressed 16-bit, the 3FR is
+about 107 MB, and the embedded 4136x3100 JPEG preview sits just after the header.
+
 ## 10. Tooling
 
 ```bash

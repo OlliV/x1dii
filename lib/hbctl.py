@@ -143,6 +143,67 @@ def encode_typed(tag, value):
 
 # ---------------------------------------------------------------- transport
 
+def _find_tiff(buf):
+    """Index of the TIFF header in a byte buffer, preferring the earliest."""
+    a = buf.find(b"II*\x00")
+    b = buf.find(b"MM\x00*")
+    hits = [i for i in (a, b) if i >= 0]
+    return min(hits) if hits else -1
+
+
+def tiff_extent(data):
+    """Total byte length a Hasselblad 3FR declares for itself, or None.
+
+    A 3FR is a TIFF whose IFD0 is a preview and whose tag 330 points at SubIFDs
+    holding the raw. The largest strip offset+length across all of them is the file
+    size; reading past it just appends whatever the camera sends next.
+    """
+    import struct as _s
+    if len(data) < 16 or data[:4] not in (b"II*\x00", b"MM\x00*"):
+        return None
+    bo = "<" if data[:2] == b"II" else ">"
+    sz = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8}
+
+    def ifd(o):
+        cnt = _s.unpack_from(bo + "H", data, o)[0]
+        ents = {}
+        for i in range(cnt):
+            q = o + 2 + 12 * i
+            tag, typ, c = _s.unpack_from(bo + "HHI", data, q)
+            total = sz.get(typ, 1) * c
+            if total <= 4:
+                v = (_s.unpack_from(bo + "H", data, q + 8)[0] if typ == 3
+                     else _s.unpack_from(bo + "I", data, q + 8)[0])
+            else:
+                v = (_s.unpack_from(bo + "I", data, q + 8)[0], total)
+            ents[tag] = (typ, c, v)
+        nxt = _s.unpack_from(bo + "I", data, o + 2 + 12 * cnt)[0]
+        return ents, nxt
+
+    def arr(ent):
+        typ, c, v = ent
+        if isinstance(v, tuple):
+            fmt = "I" if typ in (4, 9) else "H"
+            return list(_s.unpack_from(bo + "%d%s" % (c, fmt), data, v[0]))
+        return [v]
+
+    try:
+        first = _s.unpack_from(bo + "I", data, 4)[0]
+        e0, _ = ifd(first)
+        offsets = [first]
+        if 330 in e0:
+            offsets += arr(e0[330])
+        end = 0
+        for o in offsets:
+            ents, _ = ifd(o)
+            if 273 in ents and 279 in ents:
+                for start, count in zip(arr(ents[273]), arr(ents[279])):
+                    end = max(end, start + count)
+        return end or None
+    except Exception:
+        return None
+
+
 def reset_usb():
     """DEPRECATED - do not call. Kept only so old code fails loudly.
 
@@ -345,24 +406,32 @@ class Camera:
                 return int.from_bytes(p[4:8], "little")
         return None
 
-    def download(self, token, outfile, max_bytes=1 << 28, idle=4.0):
+    def download(self, token, outfile, max_bytes=1 << 28, idle=6.0):
         """Pull the pending capture for `token` off the camera. Returns bytes written.
 
-        Only works once the camera is in a "tether transfer" session - see
-        replay_session(). Without that it answers ack 8 and nothing arrives.
+        The camera streams the file on 0x84 - the same endpoint as the live view - so
+        nothing else may be reading it while this runs, and the stream may still begin
+        with a stray preview frame. We therefore resync on the TIFF header, then stop at
+        the length the TIFF declares for itself: the camera keeps sending past the end
+        of the file, which appends junk that other raw readers choke on.
         """
+        self.last_download_expected = None
         arg = bytes([0, 0]) + token.to_bytes(2, "little") + bytes(10)
         ok = False
-        for attempt in range(3):
+        for _ in range(3):
             r = self.call(OP_BLOCK, 0x0004, arg)
             if r and r[1] == b"\x00\x00\x00\x00":
                 ok = True
                 break
-            # a sleeping / screen-off body refuses; the token stays valid briefly
             time.sleep(0.6)
         if not ok:
             return 0
+
         total = 0
+        expected = None
+        started = False
+        prefix = bytearray()
+        beg = bytearray()
         last = time.time()
         with open(outfile, "wb") as fh:
             while time.time() - last < idle and total < max_bytes:
@@ -370,9 +439,35 @@ class Camera:
                     chunk = bytes(self.dev.read(EP_DATA, 8 << 20, timeout=1500))
                 except Exception:
                     break
-                fh.write(chunk)
-                total += len(chunk)
+                if not chunk:
+                    continue
                 last = time.time()
+
+                if not started:
+                    prefix += chunk
+                    idx = _find_tiff(prefix)
+                    if idx < 0:
+                        if len(prefix) > (1 << 22):
+                            break                   # never became a TIFF
+                        continue
+                    prefix = prefix[idx:]
+                    fh.write(prefix)
+                    total = len(prefix)
+                    beg += prefix
+                    started = True
+                else:
+                    fh.write(chunk)
+                    total += len(chunk)
+                    if len(beg) < 65536:
+                        beg += chunk
+
+                if expected is None and len(beg) >= 65536:
+                    expected = tiff_extent(bytes(beg[:65536]))
+                    self.last_download_expected = expected
+                if expected and total >= expected:
+                    fh.truncate(expected)
+                    total = expected
+                    break
         return total
 
     def replay_session(self, verbose=False):
