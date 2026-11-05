@@ -8,7 +8,18 @@ Ordered by value versus effort.
 
 ---
 
-## 1. Focus stacking — drive the camera's own bracketing
+## 1. Focus stacking — IMPLEMENTED, fallback still open
+
+Done: `focus-stack` in the CLI and the Focus stack panel in the app drive the camera's own
+bracketing, with frames, step size, direction and both delays. See
+[`TETHER-APP.md`](TETHER-APP.md) for the controls, the confirmed parameter codes and the
+error handling.
+
+Still open: **`0x0059 FocusPositionPercent`** as a fallback for when the built-in sequence
+runs out of lens travel. Stepping focus manually keeps the count and the starting point
+under host control, which the camera's own bracket does not.
+
+### Original notes
 
 Autofocus is not worth pursuing: the body's AF is weak and the user does not use it. Focus
 **stacking** is the interesting target, and the camera already implements focus bracketing

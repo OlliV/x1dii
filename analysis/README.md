@@ -92,6 +92,7 @@ that write (which looks like the camera failing to save).
 | [`PRORES-FEATURE-NOTE.md`](PRORES-FEATURE-NOTE.md) | ProRes design note (parked, see below) |
 | [`UPGRADE-AND-SIGNING.md`](UPGRADE-AND-SIGNING.md) | why the Android system cannot be replaced: DJI signing, the SD-card upgrade path, `dji_fw_verify` |
 | [`SIGNING-AUDIT.md`](SIGNING-AUDIT.md) | 2026-11-05 audit: key sizes, SHA-1 reliance, what the gate covers, the unauthenticated peripheral path |
+| [`TETHER-APP.md`](TETHER-APP.md) | the app itself: controls, focus stacking, error handling, known camera limits |
 | [`FUTURE-WORK.md`](FUTURE-WORK.md) | what is still worth doing, host-side: focus control, camera automation, card downloads |
 
 ## Ruled out — and why it matters

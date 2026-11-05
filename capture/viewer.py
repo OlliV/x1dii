@@ -5,6 +5,16 @@ Video goes to ffplay in its own window; this window is only the controls. That s
 deliberate: Tk's photo-image path costs real compositing time per frame and made the
 buttons feel dead, while ffplay is a native video renderer and stays smooth.
 
+Because ffplay is a separate process, the control window is forced topmost. Without it the
+preview can sit over the controls and swallow every mouse click, which is indistinguishable
+from an unresponsive UI - the clicks never reach this process at all. If buttons ever seem
+dead, check /tmp/viewer.log for "click ..." lines before changing any widget code.
+
+On macOS the window can be visible and topmost yet not actually be the key window; then
+clicks never reach the process. Clicking the title bar fixes it, and _raise_controls() does
+the equivalent automatically at startup. Space and Return also fire CAPTURE, so the app
+stays usable from the keyboard.
+
     python3 capture/viewer.py [--record out.h264]
 
   reader thread    0x84 -> H.264 payloads -> deque(maxlen=N), drops oldest
@@ -250,6 +260,19 @@ class App:
         root.bind("<space>", lambda e: self.on_capture())
         root.bind("<Return>", lambda e: self.on_capture())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # diagnostic: log every click that reaches the app, with the widget it hit, so a
+        # dead button can be told apart from a click that never arrived
+        # keep the controls above the preview window: ffplay is a separate process and
+        # can otherwise sit on top, swallowing every click meant for these controls
+        try:
+            root.attributes("-topmost", True)
+        except Exception:
+            pass
+        root.bind_all("<Button-1>",
+                      lambda e: self._log("click %r at %d,%d on %s"
+                                          % (e.num, e.x_root, e.y_root,
+                                             e.widget.__class__.__name__)),
+                      add="+")
 
         # ---- video: ffplay owns the picture
         # a killed process leaves ffplay holding the last frame; sweep those first
@@ -266,7 +289,8 @@ class App:
             stdin=subprocess.PIPE)
         # the preview is its own process and takes focus when it maps; keep the controls
         # in front so a click lands on the button instead of only activating the window
-        self.root.after(400, self._raise_controls)
+        for delay in (300, 1000, 2500):
+            self.root.after(delay, self._raise_controls)
         self._rec = open(record, "wb") if record else None
 
         for fn in (self._reader, self._writer, self._watchdog, self._reconnect,
@@ -321,9 +345,19 @@ class App:
         return b
 
     def _raise_controls(self):
+        """Activate the window the way clicking its title bar does.
+
+        On macOS a window can be visible and topmost yet not be the key window, in which
+        case clicks on its buttons never reach the process at all. Re-asserting topmost
+        and forcing focus is what a title-bar click would do; it is retried a few times
+        because ffplay's window appears shortly after startup and can take focus back.
+        """
         try:
             self.root.lift()
+            self.root.attributes("-topmost", False)
+            self.root.attributes("-topmost", True)
             self.root.focus_force()
+            self.root.focus_set()
         except Exception:
             pass
 
@@ -658,16 +692,34 @@ class App:
             got = []
             try:
                 self._say("stack: stopping preview\u2026")
-                with self.lock:
-                    self.cam.call(hbctl.OP_CMD, 0x0007, bytes(10), retries=0)
+                # Stop live view and CONFIRM the stream has stopped. With the preview
+                # running the camera accepts the trigger but ignores the drive mode, so a
+                # bracket silently becomes one frame - which is exactly what happened.
+                for attempt in range(4):
+                    with self.lock:
+                        self.cam.call(hbctl.OP_CMD, 0x0007, bytes(10), retries=0)
+                    quiet = time.time()
+                    stopped = False
+                    while time.time() - quiet < 1.5:
+                        if self._last_frame_time > quiet:
+                            break                 # a frame arrived: still streaming
+                        time.sleep(0.1)
+                    else:
+                        stopped = True
+                    self._log("stack: stop preview attempt %d, stopped=%s" % (attempt + 1, stopped))
+                    if stopped:
+                        break
                 self.downloading = True          # the reader must not take 0x84
                 time.sleep(0.6)
+                self._say("stack: starting\u2026")
                 direction = DIR_NAMES.index(self.stack_dir.get())
                 with self.lock:
                     got = self.cam.focus_bracket(
                         frames=frames, step=step, direction=direction,
                         progress=lambda p, n: self._say("stack %d/%d" % (n, frames)))
-                self._log("stack: %d/%d frames, step %s" % (len(got), frames, self.stack_step.get()))
+                self._log("stack: %d/%d frames" % (len(got), frames))
+                if not got:
+                    self._say("stack: no frames - camera busy, try again")
                 if len(got) >= frames:
                     self._say("stack: %d frames on card" % len(got))
                 else:

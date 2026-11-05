@@ -401,7 +401,7 @@ class Camera:
         return n
 
     def focus_bracket(self, frames=3, step=0, initial_delay=None,
-                      exposure_delay=None, direction=0, timeout=90.0, idle=4.0,
+                      exposure_delay=None, direction=0, timeout=60.0, idle=4.0,
                       progress=None):
         """Run the camera's own focus bracketing and return the files it wrote.
 
@@ -428,18 +428,25 @@ class Camera:
         if direction is not None:                           # 0x006e, 0 inf / 1 near / 2 both
             self.write(0x006e, direction)
         self.write(0x0041, 5)                               # DriveModeMode = focus bracket
+        time.sleep(0.15)
         if self.read(0x0041) != 5:
-            raise RuntimeError("camera refused drive mode 5")
+            self.write(0x0041, 5)                           # the first write can be dropped
+            time.sleep(0.15)
+            if self.read(0x0041) != 5:
+                raise RuntimeError("camera refused drive mode 5")
 
         self.seq = (self.seq + 1) & 0x7FFF
         payload = struct.pack("<H", self.seq) + bytes([OP_CMD]) + struct.pack("<H", 0x0001)
         self.dev.write(EP_OUT, bytes([0x04, 0x00, 0x08, 0x05, len(payload)]) + payload,
                        timeout=self.timeout)
 
-        seen, end, last_new = [], time.time() + timeout, time.time()
+        seen, end = [], time.time() + timeout
+        started = last_new = time.time()
         while time.time() < end and len(seen) < frames:
+            if not seen and time.time() - started > 8:
+                break                     # no first frame: camera never started the run
             if seen and time.time() - last_new > idle:
-                break                     # camera stopped early (lens limit) - don't hang
+                break                     # stopped early (lens limit, or busy)
             try:
                 b = bytes(self.dev.read(EP_IN, 1024, timeout=800))
             except usb.core.USBTimeoutError:
