@@ -23,9 +23,14 @@ writes reuse the read format** — a write is `op 3` carrying `"I1,400"`, exactl
 the camera reads back. Write acks are `0` when accepted and non-zero when not, and
 `hbctl write` checks the read-back rather than trusting the ack.
 
-The open problem is no longer "how do we talk to it" but "what do we make it do". Video
-resolution turned out to be a dead end (§1.5) — it isn't on the wire at all. What is left
-is capture triggering and file download (§1.7).
+There is also a working **live view window** — [`liveapp.py`](liveapp.py), no Phocus:
+
+```bash
+python3 analysis/liveapp.py --seconds 60     # 2756x2064 H.264 preview, ~11 fps, instant start
+```
+
+Video resolution turned out to be a dead end (§1.5) — it isn't on the wire at all. What is
+left is file download (§1.7). Details: [`LIVEVIEW.md`](LIVEVIEW.md).
 
 Environment notes:
 * camera must not be held by Phocus (`claim_interface(3)` fails while it runs);
@@ -127,7 +132,7 @@ selection. It is not settable, or even observable, through the host protocol. Re
 hidden 2756×1240 / 2756×2064 groups requires modifying the camera (GUI binary or pipeline
 config), not the host.
 
-### 1.6 Live view (photo mode) — captured, format known
+### 1.6 Live view — reproduced and working
 
 With Phocus connected in photo mode the camera streams continuously on `0x84`, ~27 fps,
 ~66 KB per frame, 1261 frames captured. Header:
@@ -145,9 +150,11 @@ Every frame is 2756×2064 — full sensor width, exactly the `video_2064P@2997` 
 the *preview* size and does not follow the video setting (it stayed constant across a
 resolution change), so it is not a usable readout for the recording resolution.
 
-The stream only runs while Phocus drives it; re-arming `0x84` from `hbctl` alone gets
-nothing, and the 181-command connect sequence that precedes it is in
-[`trace-liveview-2064.log`](trace-liveview-2064.log) if it is ever worth replaying.
+Live view is started by a **single command** — `op 1` / `0x0007` / first byte `0x0c` — and
+all zeros stops it. Phocus's 181-command handshake turns out to be unnecessary; only one
+of those 180 extra commands matters. No polling is needed either. See
+[`LIVEVIEW.md`](LIVEVIEW.md) for the frame layout and the viewer; `liveapp.py --seconds N`
+opens a window in about a second.
 
 ### 1.7 Where device work stands
 
@@ -208,6 +215,8 @@ Scene notes for the Phocus side are in `PROTOCOL.md` §7 (arch offsets, tooling)
 | `HBCTL.md` | how to use the host driver, value encoding, gotchas |
 | `hbctl.py` | the driver itself (read / write / describe / dump / watch / storage) |
 | `PARAMETERS-LIVE.md` | every parameter with its live value and descriptor |
+| `LIVEVIEW.md` | live view protocol, framing and viewer |
+| `liveapp.py`, `liveview_stream.py`, `liveview_replay.py` | live view: viewer, streaming, connect replay |
 | `usbshim.c` | LibUsb replacement used to capture Phocus's traffic |
 | `parse_trace.py`, `watch_events.py` | decode a trace; list async events |
 | `trace-phocus-capture.log` | raw libusb trace of connect + one capture |
