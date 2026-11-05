@@ -211,6 +211,22 @@ for a late answer.
 
 ---
 
+## 9b. Capture sequence (partly decoded)
+
+```
+1  op 1 / 0x0001  (empty)          host -> camera   shutter actuates, ack 0x81
+2  event 0x40, data 04 <token u32>  camera -> host  token increments per shot (1e42, 1e43, 1e44 …)
+3  op 7 / 0x0004  <token>          host -> camera   ack 0 — only accepted once a capture happened
+4  op 1 / 0x0009  <token>          host -> camera
+```
+
+**All four steps verified end to end**: a capture performed this way produced
+`/SD1/DCIM/102HASBL/B0002316.3FR` on the card. Steps 3–4 are compulsory — without them the
+body fires the shutter and writes nothing.
+
+Note the storage listing blob's first byte is the **entry count**, not a magic value: it was
+`0x09` with 9 files and `0x0a` once the capture added a tenth.
+
 ## 10. Tooling
 
 ```bash

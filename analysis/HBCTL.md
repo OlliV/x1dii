@@ -87,6 +87,8 @@ op 3 changes stored settings.
 * Integer write with read-back (`SelfTimerTime` 3 → 6 → 3).
 * Double write with read-back (`Iso` 100 → 400 → 100).
 * Full 87-parameter dump, and a 86-key JSON snapshot.
+* **Capture end to end** — `capture 1` fires the shutter, completes the token handshake,
+  and the file lands on the card (`B0002316.3FR`).
 * Storage listing (9 paths on this card) — **photo mode only**; in video mode the request
   is accepted but the blob is not a listing, because storage is locked for recording.
 
@@ -108,8 +110,5 @@ op 3 changes stored settings.
 
 ## Not yet available
 
-* **Capture trigger.** Not verified. Phocus's capture sequence uses `op 7`/`0x0004`, which
-  the camera refuses (ack 8) outside of a capture-in-progress state. In video mode the
-  shutter button starts a recording, so this needs care.
-* **File download.** `op 7`/`0x0004` refuses; only listing works.
-* **Live view stream.** Runs only while Phocus drives it (see `STATUS.md` §1.6).
+* **File download.** The read still refuses, so images can be listed but not pulled over
+  USB — the mass-storage volume or a card reader is the way to get files off today.

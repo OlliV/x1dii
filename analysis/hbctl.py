@@ -31,6 +31,7 @@ Commands
   hbctl.py dump                       everything: value + descriptor
   hbctl.py watch Iso Battery          poll and print changes
   hbctl.py snapshot out.json          full state as JSON
+  hbctl.py capture [count] [delay]    fire the shutter
   hbctl.py storage                    list the card
   hbctl.py raw <op> <code> [hex]      arbitrary frame (writes need --write)
 
@@ -238,6 +239,46 @@ class Camera:
             applied = str(after) == str(value)
         return applied, before, after, ack
 
+    def release(self, timeout=15.0, commit=True):
+        """Fire the shutter, then complete the capture handshake.
+
+        1. op 1 / code 0x0001 / empty      -> shutter actuates
+        2. camera sends event 0x40 carrying `04 <token u32>`
+        3. op 7 / 0x0004 with the token    -> ack 0
+        4. op 1 / 0x0009 with the token
+
+        Steps 3-4 are what Phocus always sends after a capture and appear to be the
+        commit handshake; without them the body fires but no file is written.
+        Returns (token, [ack3, ack4]).
+        """
+        self.seq = (self.seq + 1) & 0x7FFF
+        payload = struct.pack("<H", self.seq) + bytes([OP_CMD]) + struct.pack("<H", 0x0001)
+        frame = bytes([0x04, 0x00, 0x08, 0x05, len(payload)]) + payload
+        self.dev.write(EP_OUT, frame, timeout=self.timeout)
+
+        token = None
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                b = bytes(self.dev.read(EP_IN, 1024, timeout=self.timeout))
+            except usb.core.USBTimeoutError:
+                continue
+            if len(b) < 7 or b[0] != 0x03:
+                continue
+            p = b[5:5 + b[4]]
+            if len(p) >= 3 and p[2] == 0x40:
+                data = p[3:]
+                token = int.from_bytes(data[1:5], "little") if len(data) >= 5 else None
+                break
+        if token is None or not commit:
+            return token, []
+
+        v = bytes([0, 0]) + struct.pack("<H", token & 0xFFFF) + bytes(10)
+        a1 = self.call(OP_BLOCK, 0x0004, v)
+        a2 = self.call(OP_CMD, 0x0009, struct.pack("<I", token))
+        return token, [a1[1].hex(" ") if a1 else "no reply",
+                       a2[1].hex(" ") if a2 else "no reply"]
+
     def storage(self, expected=2770004):
         """List the card. The blob arrives on 0x84, possibly in several reads."""
         r = self.call(OP_BLOCK, 0x0009, bytes.fromhex("0000000000000000000054442a00"))
@@ -253,7 +294,7 @@ class Camera:
             if not chunk:
                 break
             blob += chunk
-        if not blob.startswith(b"\x09"):
+        if len(blob) < 26:
             return None                     # not a listing blob
         out, i = [], 25
         while i < len(blob) - 1:
@@ -348,6 +389,17 @@ def main():
                 }
             json.dump(state, open(out, "w"), indent=1, default=str)
             print("wrote %s (%d parameters)" % (out, len(state)))
+
+        elif cmd == "capture":
+            n = int(rest[0]) if rest else 1
+            for i in range(n):
+                token, acks = cam.release()
+                if token is None:
+                    print("shot %d: no capture event" % (i + 1))
+                    break
+                print("shot %d: token 0x%04x  commit acks %s" % (i + 1, token, acks))
+                if i + 1 < n:
+                    time.sleep(float(rest[1]) if len(rest) > 1 else 2.0)
 
         elif cmd == "storage":
             paths = cam.storage()

@@ -151,7 +151,8 @@ nothing, and the 181-command connect sequence that precedes it is in
 
 ### 1.7 Where device work stands
 
-Reads, storage listing and still-photo parameter writes are all reachable. What is not:
+Reads, storage listing, still-photo parameter writes and **capture** are all working
+end to end. What is not:
 
 * **Video resolution.** Settled negative, see §1.5 — it is not on the wire at all.
 * **File download.** `op 7`/`0x0004` (bulk read) still refuses with ack `8`, so images can
