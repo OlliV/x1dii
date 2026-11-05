@@ -1,0 +1,415 @@
+seq    dir    op         code   name                         value
+2      <-     u16[]                                          codes StopDown(0x56), FocusModeParam(0x2), ExposureMode(0x3), MirroPosition(0x4), LightmeterMode(0x6), EvAdjust(0x7), Aperture(0x8), Shutter(0x9), Iso(0xa), SensorType(0xe), None(0xf), IrType(0x10), SensorUnitType(0x11), SensorWidth(0x12), SensorHeight(0x13), SerialNumber(0x16), BodyType(0x17), FirmwareVersion(0x1b), Running(0x1c), BackType(0x24), SensorUnitString(0x25), SerialString(0x27), RealBodyType(0x28), MaxBlockSize(0x29), CalibrationBlockSize(0x2b), CurrentImages(0x2d), FocalLength(0x2e), Battery(0x2f), WhiteBalance(0x30), TetheredCaptureEnabled(0x33), Orientation(0x34), LiveVideo(0x35), LensMounted(0x3d), ApertureName(0x3e), ShutterName(0x3f), DriveModeMode(0x41), CameraMode(0x43), VideoType(0x44), LiveviewTimeout(0x45), WhiteBalanceCameraMode(0x46), None(0x47), WhiteBalanceCameraTint(0x48), ExposuresLeft(0x49), AutoIso(0x4c), Device0Status(0x4e), Device1Status(0x4f), ZoomPoint(0x50), LiveVideoMode(0x51), FocusSizeList(0x52), FocusPointAlignment(0x53), FocusPoint(0x54), FocusSize(0x55), StopDown(0x56), FlashEvAdjust(0x57), EShutter(0x58), FocusPositionPercent(0x59), FocusDistanceScale(0x5a), None(0x5b), QuickExposureAdjust(0x5c), SelfTimerTime(0x5d), SelfTimerLEDBlink(0x5e), SelfTimerWhenFinished(0x5f), IntervalTime(0x60), IntervalFrames(0x61), IntervalInititalDelay(0x62), IntervalWhenFinished(0x63), ExpBracketingAmount(0x64), ExpBracketingFrames(0x65), None(0x66), ExpBracketingParamInM(0x67), ExpBracketingSequence(0x68), None(0x69), None(0x6a), FocusBracketingFrames(0x6b), None(0x6c), None(0x6d), None(0x6e), None(0x6f), LensSerialNumber(0x70), LensShutterCount(0x71), WifiSsidName(0x72), GpsStatus(0x73), StorageMode(0x74), PrimaryDeviceImageRaw(0x75), Language(0x76), UnitOfDistance(0x77), LensProductName(0x78)
+3      <-     string                                         str 'i66'
+4      <-     int32                                          int32 0 (0x00000000)
+5      <-     string                                         str 'i150'
+6      <-     string                                         str 'i0'
+7      <-     string                                         str 'i0'
+8      <-     string                                         str 'S17,/SD1/SD2:/SD1/SD2'
+9      <-     string                                         str 'i95'
+10     <-     int32                                          int32 0 (0x00000000)
+11     <-     string                                         str 'f4059000000000000'
+0      ->     WRITE_STR  0x007a TetheredMode                 I2,1,1
+0      <-     u32?                                           u32 13
+1      ->     WRITE      0x0004 MirroPosition                00 00 00
+1      <-     int32                                          int32 0 (0x00000000)
+2      ->     5          0x0000                              
+2      <-     u16[]                                          codes StopDown(0x56), FocusModeParam(0x2), ExposureMode(0x3), MirroPosition(0x4), LightmeterMode(0x6), EvAdjust(0x7), Aperture(0x8), Shutter(0x9), Iso(0xa), SensorType(0xe), None(0xf), IrType(0x10), SensorUnitType(0x11), SensorWidth(0x12), SensorHeight(0x13), SerialNumber(0x16), BodyType(0x17), FirmwareVersion(0x1b), Running(0x1c), BackType(0x24), SensorUnitString(0x25), SerialString(0x27), RealBodyType(0x28), MaxBlockSize(0x29), CalibrationBlockSize(0x2b), CurrentImages(0x2d), FocalLength(0x2e), Battery(0x2f), WhiteBalance(0x30), TetheredCaptureEnabled(0x33), Orientation(0x34), LiveVideo(0x35), LensMounted(0x3d), ApertureName(0x3e), ShutterName(0x3f), DriveModeMode(0x41), CameraMode(0x43), VideoType(0x44), LiveviewTimeout(0x45), WhiteBalanceCameraMode(0x46), None(0x47), WhiteBalanceCameraTint(0x48), ExposuresLeft(0x49), AutoIso(0x4c), Device0Status(0x4e), Device1Status(0x4f), ZoomPoint(0x50), LiveVideoMode(0x51), FocusSizeList(0x52), FocusPointAlignment(0x53), FocusPoint(0x54), FocusSize(0x55), StopDown(0x56), FlashEvAdjust(0x57), EShutter(0x58), FocusPositionPercent(0x59), FocusDistanceScale(0x5a), None(0x5b), QuickExposureAdjust(0x5c), SelfTimerTime(0x5d), SelfTimerLEDBlink(0x5e), SelfTimerWhenFinished(0x5f), IntervalTime(0x60), IntervalFrames(0x61), IntervalInititalDelay(0x62), IntervalWhenFinished(0x63), ExpBracketingAmount(0x64), ExpBracketingFrames(0x65), None(0x66), ExpBracketingParamInM(0x67), ExpBracketingSequence(0x68), None(0x69), None(0x6a), FocusBracketingFrames(0x6b), None(0x6c), None(0x6d), None(0x6e), None(0x6f), LensSerialNumber(0x70), LensShutterCount(0x71), WifiSsidName(0x72), GpsStatus(0x73), StorageMode(0x74), PrimaryDeviceImageRaw(0x75), Language(0x76), UnitOfDistance(0x77), LensProductName(0x78)
+3      ->     READ       0x0011 SensorUnitType               
+3      <-     string                                         str 'i66'
+4      ->     READ_MULTI 0x0002 FocusModeParam               
+4      <-     tagged                                         tagged 01 01 4c 49 32 2c 30 2c 31 ('..LI2,0,1')
+5      ->     READ_MULTI 0x0003 ExposureMode                 
+5      <-     tagged                                         tagged 01 00 4c 49 37 2c 30 2c 31 2c 32 2c 33 2c 38 2c 39 2c 31 30 ('..LI7,0,1,2,3,8,9,10')
+6      ->     READ_MULTI 0x0004 MirroPosition                
+6      <-     tagged                                         tagged 01 00 4d 4c 69 31 2c 31 2c 31 ('..MLi1,1,1')
+7      ->     READ_MULTI 0x0006 LightmeterMode               
+7      <-     tagged                                         tagged 01 01 4c 49 33 2c 32 2c 33 2c 36 ('..LI3,2,3,6')
+8      ->     READ_MULTI 0x0007 EvAdjust                     
+8      <-     tagged                                         tagged 01 01 4d 4c 66 63 30 31 34 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 31 34 30 30 30 30 30 30 30 30 30 30 30 30 2c 33 66 64 35 35 35 35 35 36 30 30 30 30 30 30 30 ('..MLfc014000000000000,4014000000000000,3fd5555560000000')
+9      ->     READ       0x0017 BodyType                     
+9      <-     string                                         str 'i150'
+10     ->     READ_MULTI 0x0008 Aperture                     
+10     <-     tagged                                         tagged 01 01 4c 52 31 31 2c 34 30 30 30 31 2c 33 30 30 30 30 61 2c 33 38 30 30 30 61 2c 34 34 30 30 30 61 2c 38 30 30 30 31 2c 35 66 30 30 30 61 2c 62 30 30 30 31 2c 64 30 30 30 31 2c 31 30 30 30 30 31 2c 31 33 30 30 30 31 2c 31 36 30 30 30 31 ('..LR11,40001,30000a,38000a,44000a,80001,5f000a,b0001,d0001,100001,130001,160001')
+11     ->     READ_MULTI 0x0009 Shutter                      
+0      <-     ?                                              
+25905  <-     2c                                             31 30 30 32 64 2c 31 30 30 33 63 2c 31 30 30 35 61 2c 31 30 30 37 64 2c 31 30 30 62 34 2c 31 30 30 66 61 2c 31 30 31 35 65 2c 31 30 31 66 34 2c 31 30 32 65 65 2c 31 30 33 65 38 2c 31 30 35 64 63 2c 31 30 37 64 30
+12     ->     READ_MULTI 0x000a Iso                          
+12     <-     tagged                                         tagged 01 01 4c 46 31 30 2c 62 66 66 30 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 35 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 36 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 37 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 38 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 39 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 61 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 62 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 63 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 64 39 30 30 30 30 30 30 30 30 30 30 30 30 ('..LF10,bff0000000000000,4059000000000000,4069000000000000,4079000000000000,4089000000000000,4099000000000000,40a9000000000000,40b9000000000000,40c9000000000000,40d9000000000000')
+13     ->     READ_MULTI 0x000e SensorType                   
+13     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 32 30 2c 31 ('..MLi0,20,1')
+14     ->     READ_MULTI 0x000f None                         
+14     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 30 2c 30 ('..MLi0,0,0')
+15     ->     READ_MULTI 0x0010 IrType                       
+15     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 32 30 2c 31 ('..MLi0,20,1')
+16     ->     READ_MULTI 0x0011 SensorUnitType               
+16     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 32 35 35 2c 31 ('..MLi0,255,1')
+17     ->     READ_MULTI 0x0012 SensorWidth                  
+17     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 31 30 30 2c 31 ('..MLi0,100,1')
+18     ->     READ_MULTI 0x0013 SensorHeight                 
+18     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 31 30 30 2c 31 ('..MLi0,100,1')
+19     ->     READ_MULTI 0x0017 BodyType                     
+19     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 32 35 35 2c 31 ('..MLi0,255,1')
+20     ->     READ_MULTI 0x001b FirmwareVersion              
+20     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 30 2c 30 ('..MLi0,0,0')
+21     ->     READ_MULTI 0x001c Running                      
+21     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+22     ->     READ_MULTI 0x0024 BackType                     
+22     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 32 35 35 2c 31 ('..MLi0,255,1')
+23     ->     READ_MULTI 0x0025 SensorUnitString             
+23     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 30 2c 30 ('..MLi0,0,0')
+24     ->     READ_MULTI 0x0027 SerialString                 
+24     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 30 2c 30 ('..MLi0,0,0')
+25     ->     READ_MULTI 0x0028 RealBodyType                 
+25     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 32 35 35 2c 31 ('..MLi0,255,1')
+26     ->     READ_MULTI 0x0029 MaxBlockSize                 
+26     <-     tagged                                         tagged 01 00 4d 4c 69 31 2c 38 33 38 38 36 30 38 2c 31 ('..MLi1,8388608,1')
+27     ->     READ_MULTI 0x002b CalibrationBlockSize         
+27     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 31 30 32 34 2c 31 ('..MLi0,1024,1')
+28     ->     READ_MULTI 0x002d CurrentImages                
+28     <-     tagged                                         tagged 01 00 4d 4c 72 30 2c 30 2c 30 ('..MLr0,0,0')
+29     ->     READ_MULTI 0x002e FocalLength                  
+29     <-     tagged                                         tagged 01 00 4d 4c 69 34 35 2c 34 35 2c 31 ('..MLi45,45,1')
+30     ->     READ_MULTI 0x002f Battery                      
+30     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 31 30 30 2c 31 ('..MLi0,100,1')
+31     ->     READ_MULTI 0x0030 WhiteBalance                 
+31     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 32 2c 31 ('..MLi0,2,1')
+32     ->     READ_MULTI 0x0033 TetheredCaptureEnabled       
+32     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+33     ->     READ_MULTI 0x0034 Orientation                  
+33     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 38 2c 31 ('..MLi0,8,1')
+34     ->     READ_MULTI 0x0035 LiveVideo                    
+34     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 32 2c 31 ('..MLi0,2,1')
+35     ->     READ_MULTI 0x003d LensMounted                  
+35     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+36     ->     READ       0x0017 BodyType                     
+36     <-     string                                         str 'i150'
+37     ->     READ_MULTI 0x003e ApertureName                 
+37     <-     tagged                                         tagged 01 00 4c 53 33 34 2c 34 09 34 2e 38 09 35 2e 36 09 36 2e 38 09 38 09 39 2e 35 09 31 31 09 31 33 09 31 36 09 31 39 09 32 32 ('..LS34,4.4.8.5.6.6.8.8.9.5.11.13.16.19.22')
+38     ->     READ_MULTI 0x003f ShutterName                  
+38     <-     tagged                                         tagged 01 00 4c 53 32 33 32 2c 31 3a 30 38 09 34 38 3a 31 36 09 33 34 3a 30 38 09 32 34 3a 30 38 09 31 37 3a 30 34 09 31 32 3a 30 34 09 38 3a 33 32 09 36 3a 30 32 09 34 3a 31 36 09 33 3a 30 31 09 32 3a 30 38 09 31 3a 33 31 09 31 3a 30 34 09 34 35 09 33 32 09 32 33 09 31 36 09 31 31 09 38 2e 30 09 36 2e 30 09 34 2e 30 09 33 2e 30 09 32 2e 30 09 31 2e 34 09 54 09 42 09 31 2e 30 09 30 2e 37 09 30 2e 35 09 30 2e 33 09 31 2f 34 09 31 2f 36 09 31 2f 38 09 31 2f 31 30 09 31 2f 31 35 09 31 2f 32 30 09 31 2f 33 30 09 31 2f 34 35 09 31 2f 36 30 09 31 2f 39 30 09 31 2f 31 32 35 09 31 2f 31 38 30 09 31 2f 32 35 30 09 31 2f 33 35 30 09 31 2f 35 30 30 09 31 2f 37 35 30 09 31 2f 31 30 30 30 09 31 2f 31 35 30 30 09 31 2f 32 30 30 30 ('..LS232,1:08.48:16.34:08.24:08.17:04.12:04.8:32.6:02.4:16.3:01.2:08.1:31.1:04.45.32.23.16.11.8.0.6.0.4.0.3.0.2.0.1.4.T.B.1.0.0.7.0.5.0.3.1/4.1/6.1/8.1/10.1/15.1/20.1/30.1/45.1/60.1/90.1/125.1/180.1/250.1/350.1/500.1/750.1/1000.1/1500.1/2000')
+39     ->     READ_MULTI 0x0041 DriveModeMode                
+39     <-     tagged                                         tagged 01 01 4c 49 36 2c 30 2c 31 2c 32 2c 33 2c 34 2c 35 ('..LI6,0,1,2,3,4,5')
+40     ->     READ_MULTI 0x0043 CameraMode                   
+40     <-     tagged                                         tagged 01 01 4c 49 32 2c 30 2c 31 ('..LI2,0,1')
+41     ->     READ_MULTI 0x0044 VideoType                    
+41     <-     tagged                                         tagged 01 01 4c 49 32 2c 30 2c 31 ('..LI2,0,1')
+42     ->     READ_MULTI 0x0045 LiveviewTimeout              
+42     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 38 30 30 2c 31 ('..MLi0,1800,1')
+43     ->     READ_MULTI 0x0046 WhiteBalanceCameraMode       
+43     <-     tagged                                         tagged 01 01 4c 49 38 2c 32 2c 33 2c 34 2c 35 2c 36 2c 37 2c 31 31 2c 31 32 ('..LI8,2,3,4,5,6,7,11,12')
+44     ->     READ_MULTI 0x0047 None                         
+44     <-     tagged                                         tagged 01 01 4d 4c 69 32 30 30 30 2c 31 30 30 30 30 2c 31 ('..MLi2000,10000,1')
+45     ->     READ_MULTI 0x0048 WhiteBalanceCameraTint       
+45     <-     tagged                                         tagged 01 01 4d 4c 69 2d 31 30 30 2c 31 30 30 2c 31 ('..MLi-100,100,1')
+46     ->     READ_MULTI 0x0049 ExposuresLeft                
+46     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 32 31 34 37 34 38 33 36 34 37 2c 31 ('..MLi0,2147483647,1')
+47     ->     READ_MULTI 0x004c AutoIso                      
+47     <-     tagged                                         tagged 01 00 4c 46 39 2c 34 30 35 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 36 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 37 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 38 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 39 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 61 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 62 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 63 39 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 64 39 30 30 30 30 30 30 30 30 30 30 30 30 ('..LF9,4059000000000000,4069000000000000,4079000000000000,4089000000000000,4099000000000000,40a9000000000000,40b9000000000000,40c9000000000000,40d9000000000000')
+48     ->     READ_MULTI 0x004e Device0Status                
+48     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 35 2c 31 ('..MLi0,5,1')
+49     ->     READ_MULTI 0x004f Device1Status                
+49     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 35 2c 31 ('..MLi0,5,1')
+50     ->     READ_MULTI 0x0050 ZoomPoint                    
+50     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 32 31 34 37 34 38 33 36 34 37 2c 31 ('..MLi0,2147483647,1')
+51     ->     READ_MULTI 0x0051 LiveVideoMode                
+51     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 31 34 2c 31 ('..MLi0,14,1')
+52     ->     READ_MULTI 0x0052 FocusSizeList                
+52     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 32 31 34 37 34 38 33 36 34 37 2c 31 ('..MLi0,2147483647,1')
+53     ->     READ_MULTI 0x0053 FocusPointAlignment          
+53     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 32 31 34 37 34 38 33 36 34 37 2c 31 ('..MLi0,2147483647,1')
+54     ->     READ_MULTI 0x0054 FocusPoint                   
+54     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 32 31 34 37 34 38 33 36 34 37 2c 31 ('..MLi0,2147483647,1')
+55     ->     READ_MULTI 0x0055 FocusSize                    
+55     <-     tagged                                         tagged 01 01 4c 49 33 2c 34 34 30 34 30 36 35 36 2c 36 36 30 36 30 39 38 35 2c 38 38 30 38 31 33 31 32 ('..LI3,44040656,66060985,88081312')
+56     ->     READ_MULTI 0x0056 StopDown                     
+56     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+57     ->     READ_MULTI 0x0057 FlashEvAdjust                
+57     <-     tagged                                         tagged 01 01 4d 4c 66 63 30 30 38 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 30 38 30 30 30 30 30 30 30 30 30 30 30 30 2c 33 66 64 35 35 35 35 35 36 30 30 30 30 30 30 30 ('..MLfc008000000000000,4008000000000000,3fd5555560000000')
+58     ->     READ_MULTI 0x0058 EShutter                     
+58     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+59     ->     READ_MULTI 0x0059 FocusPositionPercent         
+59     <-     tagged                                         tagged 01 00 4d 4c 66 30 2c 33 66 66 30 30 30 30 30 30 30 30 30 30 30 30 30 2c 33 66 35 30 36 32 34 64 64 32 66 31 61 39 66 63 ('..MLf0,3ff0000000000000,3f50624dd2f1a9fc')
+60     ->     READ_MULTI 0x005a FocusDistanceScale           
+60     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 33 32 37 36 37 2c 31 ('..MLi0,32767,1')
+61     ->     READ_MULTI 0x005b None                         
+61     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 33 32 37 36 37 2c 31 ('..MLi0,32767,1')
+62     ->     READ_MULTI 0x005c QuickExposureAdjust          
+62     <-     tagged                                         tagged 01 01 4d 4c 66 63 30 31 34 30 30 30 30 30 30 30 30 30 30 30 30 2c 34 30 31 34 30 30 30 30 30 30 30 30 30 30 30 30 2c 33 66 64 35 35 35 35 35 36 30 30 30 30 30 30 30 ('..MLfc014000000000000,4014000000000000,3fd5555560000000')
+63     ->     READ_MULTI 0x005d SelfTimerTime                
+63     <-     tagged                                         tagged 01 01 4d 4c 69 32 2c 36 30 2c 31 ('..MLi2,60,1')
+64     ->     READ_MULTI 0x005e SelfTimerLEDBlink            
+64     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+65     ->     READ_MULTI 0x005f SelfTimerWhenFinished        
+65     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+66     ->     READ_MULTI 0x0060 IntervalTime                 
+66     <-     tagged                                         tagged 01 01 4c 49 34 34 2c 32 2c 33 2c 34 2c 35 2c 36 2c 37 2c 38 2c 39 2c 31 30 2c 31 35 2c 32 30 2c 32 35 2c 33 30 2c 33 35 2c 34 30 2c 34 35 2c 35 30 2c 35 35 2c 36 30 2c 37 30 2c 38 30 2c 39 30 2c 31 30 30 2c 31 31 30 2c 31 32 30 2c 31 33 35 2c 31 35 30 2c 31 36 35 2c 31 38 30 2c 32 31 30 2c 32 31 30 2c 32 34 30 2c 33 30 30 2c 33 36 30 2c 34 38 30 2c 36 30 30 2c 37 32 30 2c 39 30 30 2c 31 32 30 30 2c 31 35 30 30 2c 31 38 30 30 2c 32 34 30 30 2c 33 30 30 30 2c 33 36 30 30 ('..LI44,2,3,4,5,6,7,8,9,10,15,20,25,30,35,40,45,50,55,60,70,80,90,100,110,120,135,150,165,180,210,210,240,300,360,480,600,720,900,1200,1500,1800,2400,3000,3600')
+67     ->     READ_MULTI 0x0061 IntervalFrames               
+67     <-     tagged                                         tagged 01 01 4c 49 35 38 2c 32 2c 33 2c 34 2c 35 2c 36 2c 37 2c 38 2c 39 2c 31 30 2c 31 31 2c 31 32 2c 31 33 2c 31 34 2c 31 35 2c 31 36 2c 31 37 2c 31 38 2c 31 39 2c 32 30 2c 32 31 2c 32 32 2c 32 33 2c 32 34 2c 32 35 2c 33 30 2c 33 35 2c 34 30 2c 34 35 2c 35 30 2c 35 35 2c 36 30 2c 36 35 2c 37 30 2c 37 35 2c 38 30 2c 38 35 2c 39 30 2c 39 35 2c 31 30 30 2c 31 35 30 2c 32 30 30 2c 32 35 30 2c 33 30 30 2c 33 35 30 2c 34 30 30 2c 34 35 30 2c 35 30 30 2c 35 35 30 2c 36 30 30 2c 36 35 30 2c 37 30 30 2c 37 35 30 2c 38 30 30 2c 38 35 30 2c 39 30 30 2c 39 35 30 2c 31 30 30 30 2c 2d 31 ('..LI58,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100,150,200,250,300,350,400,450,500,550,600,650,700,750,800,850,900,950,1000,-1')
+68     ->     READ_MULTI 0x0062 IntervalInititalDelay        
+68     <-     tagged                                         tagged 01 01 4c 49 35 2c 30 2c 32 2c 31 30 2c 36 30 2c 32 35 35 ('..LI5,0,2,10,60,255')
+69     ->     READ_MULTI 0x0063 IntervalWhenFinished         
+69     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+70     ->     READ_MULTI 0x0064 ExpBracketingAmount          
+70     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 35 2c 31 ('..MLi0,5,1')
+71     ->     READ_MULTI 0x0065 ExpBracketingFrames          
+71     <-     tagged                                         tagged 01 01 4c 49 35 2c 32 2c 33 2c 35 2c 37 2c 39 ('..LI5,2,3,5,7,9')
+72     ->     READ_MULTI 0x0066 None                         
+72     <-     tagged                                         tagged 01 01 4c 49 36 2c 30 2c 32 2c 35 2c 31 30 2c 33 30 2c 36 30 ('..LI6,0,2,5,10,30,60')
+73     ->     READ_MULTI 0x0067 ExpBracketingParamInM        
+73     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+74     ->     READ_MULTI 0x0068 ExpBracketingSequence        
+74     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 33 2c 31 ('..MLi0,3,1')
+75     ->     READ_MULTI 0x0069 None                         
+75     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+76     ->     READ_MULTI 0x006a None                         
+76     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 34 2c 31 ('..MLi0,4,1')
+77     ->     READ_MULTI 0x006b FocusBracketingFrames        
+77     <-     tagged                                         tagged 01 01 4c 49 35 37 2c 32 2c 33 2c 34 2c 35 2c 36 2c 37 2c 38 2c 39 2c 31 30 2c 31 31 2c 31 32 2c 31 33 2c 31 34 2c 31 35 2c 31 36 2c 31 37 2c 31 38 2c 31 39 2c 32 30 2c 32 31 2c 32 32 2c 32 33 2c 32 34 2c 32 35 2c 33 30 2c 33 35 2c 34 30 2c 34 35 2c 35 30 2c 35 35 2c 36 30 2c 36 35 2c 37 30 2c 37 35 2c 38 30 2c 38 35 2c 39 30 2c 39 35 2c 31 30 30 2c 31 35 30 2c 32 30 30 2c 32 35 30 2c 33 30 30 2c 33 35 30 2c 34 30 30 2c 34 35 30 2c 35 30 30 2c 35 35 30 2c 36 30 30 2c 36 35 30 2c 37 30 30 2c 37 35 30 2c 38 30 30 2c 38 35 30 2c 39 30 30 2c 39 35 30 2c 31 30 30 30 ('..LI57,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95,100,150,200,250,300,350,400,450,500,550,600,650,700,750,800,850,900,950,1000')
+78     ->     READ_MULTI 0x006c None                         
+78     <-     tagged                                         tagged 01 01 4c 49 36 2c 30 2c 32 2c 35 2c 31 30 2c 33 30 2c 36 30 ('..LI6,0,2,5,10,30,60')
+79     ->     READ_MULTI 0x006d None                         
+79     <-     tagged                                         tagged 01 01 4c 49 39 2c 30 2c 31 32 35 2c 32 35 30 2c 35 30 30 2c 31 30 30 30 2c 32 30 30 30 2c 34 30 30 30 2c 38 30 30 30 2c 31 36 30 30 30 ('..LI9,0,125,250,500,1000,2000,4000,8000,16000')
+80     ->     READ_MULTI 0x006e None                         
+80     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 33 2c 31 ('..MLi0,3,1')
+81     ->     READ_MULTI 0x006f None                         
+81     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+82     ->     READ_MULTI 0x0070 LensSerialNumber             
+82     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 30 2c 30 ('..MLi0,0,0')
+83     ->     READ_MULTI 0x0071 LensShutterCount             
+83     <-     tagged                                         tagged 01 00 4d 4c 69 2d 31 2c 32 31 34 37 34 38 33 36 34 37 2c 31 ('..MLi-1,2147483647,1')
+84     ->     READ_MULTI 0x0072 WifiSsidName                 
+84     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 30 2c 30 ('..MLi0,0,0')
+85     ->     READ_MULTI 0x0073 GpsStatus                    
+85     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 32 2c 31 ('..MLi0,2,1')
+86     ->     READ_MULTI 0x0074 StorageMode                  
+86     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+87     ->     READ_MULTI 0x0075 PrimaryDeviceImageRaw        
+87     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+88     ->     READ_MULTI 0x0076 Language                     
+88     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+89     ->     READ_MULTI 0x0077 UnitOfDistance               
+89     <-     tagged                                         tagged 01 01 4d 4c 69 30 2c 31 2c 31 ('..MLi0,1,1')
+90     ->     READ_MULTI 0x0078 LensProductName              
+90     <-     tagged                                         tagged 01 00 4d 4c 69 30 2c 30 2c 30 ('..MLi0,0,0')
+91     ->     READ_MULTI 0x0039 PreFetchHeaders              
+91     <-     tagged                                         tagged 00 00 4d 4c 72 30 2c 30 2c 30 ('..MLr0,0,0')
+92     ->     READ       0x0040 ReducedLinkSpeed             
+92     <-     string                                         str ''
+93     ->     READ       0x0011 SensorUnitType               
+93     <-     string                                         str 'i66'
+94     ->     WRITE      0x000e SensorType                   32 00
+94     <-     int32                                          int32 0 (0x00000000)
+95     ->     READ       0x0079 StorageExportedToPc          
+95     <-     string                                         str ''
+96     ->     READ       0x0010 IrType                       
+96     <-     string                                         str 'i5'
+97     ->     READ       0x000e SensorType                   
+97     <-     string                                         str 'i15'
+98     ->     CMD4       0x0007 EvAdjust                     
+98     <-     u32                                            u32 0
+99     ->     WRITE      0x000e SensorType                   32 00
+99     <-     int32                                          int32 0 (0x00000000)
+100    ->     READ       0x000a Iso                          
+100    <-     string                                         str 'f4059000000000000'
+101    ->     READ       0x001b FirmwareVersion              
+101    <-     string                                         str 'S5,1.5.2'
+102    ->     READ       0x0025 SensorUnitString             
+102    <-     string                                         str 'S21,Hasselblad X1D II 50C'
+103    ->     READ       0x0027 SerialString                 
+103    <-     string                                         str 'S10,VQ20200944'
+104    ->     CMD4       0x0007 EvAdjust                     
+104    <-     u32                                            u32 0
+105    ->     CMD4       0x0007 EvAdjust                     02
+105    <-     u32                                            u32 0
+106    ->     READ       0x0051 LiveVideoMode                
+106    <-     string                                         str 'I14,0,1,2,3,4,5,6,7,8,9,10,11,12,13'
+107    ->     CMD4       0x0007 EvAdjust                     06
+107    <-     u32                                            u32 11
+108    ->     CMD4       0x0007 EvAdjust                     08
+108    <-     u32                                            u32 0
+109    ->     CMD4       0x0007 EvAdjust                     09
+109    <-     u32                                            u32 0
+110    ->     CMD4       0x0007 EvAdjust                     0a
+110    <-     u32                                            u32 11
+111    ->     CMD4       0x0007 EvAdjust                     0c
+111    <-     u32                                            u32 0
+112    ->     CMD4       0x0007 EvAdjust                     0d
+112    <-     u32                                            u32 0
+113    ->     READ_MULTI 0x001a CameraCapabilities           
+113    <-     tagged                                         tagged 00 00 4d 4c 69 30 2c 30 2c 30 ('..MLi0,0,0')
+114    ->     READ       0x003d LensMounted                  
+114    <-     string                                         str 'i1'
+115    ->     READ       0x004e Device0Status                
+115    <-     string                                         str 'i0'
+116    ->     READ       0x004f Device1Status                
+116    <-     string                                         str 'i0'
+117    ->     READ       0x0031 VolumeLabel                  
+117    <-     string                                         str 'S17,/SD1/SD2:/SD1/SD2'
+118    ->     READ       0x0029 MaxBlockSize                 
+118    <-     string                                         str 'i8388608'
+119    ->     7          0x0009 Shutter                      00 00 00 00 00 00 00 00 00 00 54 44 2a 00
+119    <-     87                                             00 00 00 00
+120    ->     7          0x0009 Shutter                      00 00 01 00 00 00 00 00 00 00 54 44 2a 00
+120    <-     87                                             00 00 00 00
+121    ->     READ       0x0008 Aperture                     
+121    <-     string                                         str 'r40001'
+122    ->     READ       0x0009 Shutter                      
+122    <-     string                                         str 'r20001'
+123    ->     READ       0x0002 FocusModeParam               
+123    <-     string                                         str 'i0'
+124    ->     READ       0x002f Battery                      
+124    <-     string                                         str 'i95'
+125    ->     READ       0x0059 FocusPositionPercent         
+125    <-     string                                         str 'f3ff0000000000000'
+126    ->     READ       0x0046 WhiteBalanceCameraMode       
+126    <-     string                                         str 'i2'
+127    ->     READ       0x0047 None                         
+127    <-     string                                         str 'i5000'
+128    ->     READ       0x0048 WhiteBalanceCameraTint       
+128    <-     string                                         str 'i0'
+129    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+129    <-     u32                                            u32 11
+130    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+130    <-     u32                                            u32 11
+131    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+131    <-     u32                                            u32 11
+132    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+132    <-     u32                                            u32 11
+133    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+133    <-     u32                                            u32 11
+134    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+134    <-     u32                                            u32 11
+135    ->     WRITE_STR  0x0030 WhiteBalance                 I2,4724,30
+135    <-     u32?                                           u32 0
+136    ->     WRITE_STR  0x007a TetheredMode                 I2,1,0
+136    <-     u32?                                           u32 13
+137    ->     WRITE      0x0004 MirroPosition                01 00 00
+137    <-     int32                                          int32 0 (0x00000000)
+138    ->     READ       0x0016 SerialNumber                 
+138    <-     string                                         str 'i20200944'
+139    ->     READ       0x002b CalibrationBlockSize         
+69     <-     42                                             49 69 31 32
+139    <-     string                                         str 'i1024'
+140    ->     7          0x0002 FocusModeParam               00 00 01 00 00 00 00 00 00 00 00 04 00 00
+140    <-     87                                             00 00 00 00
+141    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+141    <-     u32                                            u32 11
+142    ->     CMD4       0x0001 ExposureTime                 09 00 00 00
+142    <-     u32                                            u32 11
+143    ->     CMD4       0x0007 EvAdjust                     
+143    <-     u32                                            u32 0
+144    ->     CMD4       0x0007 EvAdjust                     02
+144    <-     u32                                            u32 0
+145    ->     CMD4       0x0007 EvAdjust                     06
+145    <-     u32                                            u32 11
+146    ->     CMD4       0x0007 EvAdjust                     08
+146    <-     u32                                            u32 0
+147    ->     CMD4       0x0007 EvAdjust                     09
+147    <-     u32                                            u32 0
+148    ->     CMD4       0x0007 EvAdjust                     0a
+148    <-     u32                                            u32 11
+149    ->     CMD4       0x0007 EvAdjust                     0c
+149    <-     u32                                            u32 0
+150    ->     CMD4       0x0007 EvAdjust                     0d
+150    <-     u32                                            u32 0
+151    ->     READ       0x0089 FaceDetection                
+151    <-     string                                         str ''
+152    ->     READ       0x0081 None                         
+152    <-     string                                         str ''
+153    ->     CMD4       0x0003 ExposureMode                 
+153    <-     u32                                            u32 0
+154    ->     CMD4       0x0002 FocusModeParam               
+154    <-     u32                                            u32 0
+155    ->     CMD4       0x0001 ExposureTime                 00 00 00 00
+155    <-     u32                                            u32 0
+156    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+156    <-     u32                                            u32 11
+157    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+157    <-     u32                                            u32 11
+158    ->     READ_MULTI 0x002c Configuration                
+158    <-     tagged                                         tagged 00 00 4d 4c 69 30 2c 30 2c 30 ('..MLi0,0,0')
+159    ->     READ       0x0003 ExposureMode                 
+159    <-     string                                         str 'i1'
+160    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+160    <-     u32                                            u32 11
+161    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+161    <-     u32                                            u32 11
+162    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+162    <-     u32                                            u32 11
+163    ->     READ       0x0007 EvAdjust                     
+163    <-     string                                         str 'f0'
+164    ->     READ       0x0006 LightmeterMode               
+164    <-     string                                         str 'i2'
+165    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+165    <-     u32                                            u32 11
+166    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+166    <-     u32                                            u32 11
+167    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+167    <-     u32                                            u32 11
+168    ->     WRITE      0x0001 ExposureTime                 
+168    <-     int32                                          int32 0 (0x00000000)
+70     <-     42                                             04 69 30
+71     <-     42                                             49 69 31 31
+72     <-     42                                             71 69 31 39 33 38
+73     <-     42                                             49 69 31 30
+169    ->     CMD4       0x0003 ExposureMode                 
+169    <-     u32                                            u32 0
+170    ->     CMD4       0x0002 FocusModeParam               
+170    <-     u32                                            u32 0
+171    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+171    <-     u32                                            u32 11
+172    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+172    <-     u32                                            u32 11
+173    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+173    <-     u32                                            u32 11
+174    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+174    <-     u32                                            u32 11
+175    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+175    <-     u32                                            u32 11
+74     <-     42                                             56 69 30
+75     <-     42                                             49 69 31 31
+176    ->     CMD4       0x0003 ExposureMode                 
+176    <-     u32                                            u32 0
+177    ->     CMD4       0x0002 FocusModeParam               
+177    <-     u32                                            u32 0
+178    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+178    <-     u32                                            u32 11
+179    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+179    <-     u32                                            u32 11
+180    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+180    <-     u32                                            u32 11
+181    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+181    <-     u32                                            u32 11
+182    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+182    <-     u32                                            u32 11
+76     <-     42                                             49 69 31 32
+77     <-     in-progress                                     04 42 1e 00 00 00 52 60 06 03 33 46 52 00
+183    ->     CMD4       0x0009 Shutter                      
+183    <-     u32                                            u32 0
+184    ->     7          0x0004 MirroPosition                00 00 42 1e 00 00 00 00 00 00 00 00 00 00
+184    <-     87                                             00 00 00 00
+185    ->     READ       0x002d CurrentImages                
+185    <-     string                                         str 'i0'
+186    ->     WRITE      0x0009 Shutter                      42 1e 00 00
+186    <-     int32                                          int32 9 (0x00000009)
+187    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+187    <-     u32                                            u32 11
+188    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+188    <-     u32                                            u32 11
+189    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+189    <-     u32                                            u32 11
+190    ->     CMD4       0x0003 ExposureMode                 
+190    <-     u32                                            u32 0
+191    ->     CMD4       0x0002 FocusModeParam               
+191    <-     u32                                            u32 0
+192    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+192    <-     u32                                            u32 11
+193    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+193    <-     u32                                            u32 11
+194    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+194    <-     u32                                            u32 11
+195    ->     CMD4       0x0001 ExposureTime                 07 00 00 00
+195    <-     u32                                            u32 11
+196    ->     CMD4       0x0001 ExposureTime                 08 00 00 00
+196    <-     u32                                            u32 11
