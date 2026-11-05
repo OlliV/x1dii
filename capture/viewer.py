@@ -42,6 +42,12 @@ BTN_BG = "#f0f0f0"
 # means the greying rules follow it automatically.
 MODE_NAMES = {9: "\u25a1", 3: "P", 2: "S", 1: "A", 0: "M", 8: "Mq", 10: "Video"}
 
+# badge tint by mode family: neutral where the camera decides, warmer as you take over
+MODE_ACCENT = {9: "#455a64", 3: "#455a64",     # auto / P - camera chooses
+               2: "#3949ab", 1: "#3949ab",     # S / A - one axis yours
+               0: "#6a1b9a", 8: "#6a1b9a",     # M / Mq - both yours
+               10: "#00695c"}                  # video
+
 # which controls the mode lets you set: (aperture, shutter).
 # C1-C3 are user-programmable, so they stay permissive - whatever they are set to
 # reports that mode's own number anyway, so the value still drives the rule.
@@ -167,9 +173,30 @@ class App:
                                         if self.download_dir else "(card only)"))
         self.dir_label.pack(anchor="w")
 
-        self.status = tk.Label(root, text="starting...", anchor="w", bg="#111",
-                               fg="#9e9e9e", font=("Menlo", 11))
-        self.status.grid(row=1, column=0, sticky="we", padx=10, pady=(0, 8))
+        # status row: fixed-width message on the left so changing text cannot resize the
+        # window, battery indicator pinned right
+        row = tk.Frame(root, bg="#111")
+        row.grid(row=1, column=0, sticky="we", padx=10, pady=(0, 8))
+        row.columnconfigure(0, weight=1)
+
+        self.status = tk.Label(row, text="starting...", anchor="w", bg="#111",
+                               fg="#9e9e9e", font=("Menlo", 11), width=58)
+        self.status.grid(row=0, column=0, sticky="w")
+
+        # mode as a compact badge rather than "mode=P" in the message text
+        self.mode_badge = tk.Label(row, text="--", bg="#2b2b2b", fg="#e8e8e8",
+                                   font=("Helvetica", 11, "bold"), width=5,
+                                   bd=1, relief="solid")
+        self.mode_badge.grid(row=0, column=1, sticky="e", padx=(8, 12))
+
+        batt_box = tk.Frame(row, bg="#111")
+        batt_box.grid(row=0, column=2, sticky="e")
+        self.batt_canvas = tk.Canvas(batt_box, width=30, height=14, bg="#111",
+                                     highlightthickness=0, bd=0)
+        self.batt_canvas.pack(side="left", padx=(8, 4))
+        self.batt_label = tk.Label(batt_box, text="--%", bg="#111", fg="#9e9e9e",
+                                   font=("Menlo", 11), width=4, anchor="e")
+        self.batt_label.pack(side="left")
 
         root.bind("<space>", lambda e: self.on_capture())
         root.bind("<Return>", lambda e: self.on_capture())
@@ -385,6 +412,26 @@ class App:
                     om.configure(state="disabled")
                 self._applied[label] = var.get()
                 self._log("%s: %d choices current=%r" % (label, len(order), cur))
+
+    def _draw_mode(self, name, accent):
+        self.mode_badge.configure(text=name, bg=accent)
+
+    def _draw_battery(self, pct):
+        """Small battery glyph plus the number, so the row never reflows."""
+        c = self.batt_canvas
+        c.delete("all")
+        x0, y0, x1, y1 = 1, 2, 24, 12
+        c.create_rectangle(x0, y0, x1, y1, outline="#8a8a8a", width=1)
+        c.create_rectangle(x1 + 1, y0 + 3, x1 + 4, y1 - 3, fill="#8a8a8a", outline="")
+        if pct is None:
+            self.batt_label.configure(text="--%")
+            return
+        pct = max(0, min(100, int(pct)))
+        span = (x1 - x0 - 2)
+        fill = max(1, int(span * pct / 100.0))
+        colour = "#4caf50" if pct > 50 else "#ffb300" if pct > 20 else "#e53935"
+        c.create_rectangle(x0 + 1, y0 + 1, x0 + 1 + fill, y1 - 1, fill=colour, outline="")
+        self.batt_label.configure(text="%d%%" % pct)
 
     def _apply_mode_state(self, mode, aperture, shutter):
         """Grey out whatever the current exposure mode does not allow.
@@ -610,10 +657,12 @@ class App:
             else:
                 state = "live"
 
-            text = "%.1f fps   %s   mode=%s   battery=%s%%" % (
-                fps, state, MODE_NAMES.get(mode, "?"),
-                batt if batt is not None else "?")
+            text = "%.1f fps   %s" % (fps, state)
+            name = MODE_NAMES.get(mode, "?")
+            accent = MODE_ACCENT.get(mode, "#2b2b2b")
             self.root.after(0, lambda t=text: self.status.configure(text=t))
+            self.root.after(0, lambda n=name, a=accent: self._draw_mode(n, a))
+            self.root.after(0, lambda b=batt: self._draw_battery(b))
             self._log("fps=%.1f frames=%d drops=%d state=%s mode=%r"
                       % (fps, self._frames_seen, self.drops, state, mode))
 

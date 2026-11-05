@@ -288,6 +288,33 @@ Preconditions found the hard way — the body refuses transfers when:
 
 Until then, files come off via the card or the camera's mass-storage mode.
 
+## 9e. Exposure modes (0x0003)
+
+Read-only: a write is refused with ack `0x0d`. The body owns the dial; a host can only
+mirror it. Values mapped by cycling the dial while logging:
+
+| code | dial position | aperture settable | shutter settable |
+|---|---|---|---|
+| 9 | full auto (square) | no | no |
+| 3 | P | no | no |
+| 2 | S | no | yes |
+| 1 | A | yes | no |
+| 0 | M | yes | yes |
+| 8 | Mq (M without live view) | yes | yes |
+| 10 | video | yes | yes |
+
+Two things that are easy to get wrong, both found the hard way:
+
+* **Mq has no live view at all.** The camera refuses `0x0007` with ack `0x09`, exactly as
+  it does when asleep or overheated. A client must not report that as a fault, and should
+  not keep retrying — the preview will never appear in that mode.
+* **The C1–C3 positions have no codes of their own.** They report whatever mode they are
+  programmed to, so a C slot set to A reads `1` and follows the A rules. There is nothing
+  to special-case.
+* The sentinel `0x7fffffff` means "not applicable" and is what `Shutter` reads in A, but
+  it is *not* sufficient on its own: in S the aperture still reports a real value, so the
+  mode number has to drive which control is available.
+
 ## 10. Tooling
 
 ```bash
