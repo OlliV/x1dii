@@ -13,18 +13,19 @@ command is one the camera's own software issues.
 
 | capability | tool | notes |
 |---|---|---|
-| Live view | `viewer.py`, `liveapp.py` | 2756×2064 H.264, ~11 fps, starts with one command |
+| Live view | `viewer.py`, `liveapp.py` | 2756×2064 H.264, ~11 fps; video in its own ffplay window |
 | Capture | `viewer.py`, `hbctl.py capture` | trigger + token handshake; file lands on the card |
 | Exposure control | `viewer.py` | aperture / shutter / ISO, read back to confirm |
 | All parameters | `hbctl.py` | read, write, describe; 87 advertised |
 | Card listing | `hbctl.py storage` | both slots, no mass-storage volume needed |
 | Reconnection | `viewer.py` | survives unplug/replug and camera reboots |
+| Raw download | `hbctl.py download --session` | full 50 MP `.3FR` over USB, no card reader |
 
 ## Quick start
 
 ```bash
 # needs pyusb; falls back to /tmp/pylibs
-python3 analysis/viewer.py                  # tethering window
+python3 analysis/viewer.py                  # controls window + ffplay preview
 python3 analysis/hbctl.py dump              # every parameter, value + descriptor
 python3 analysis/hbctl.py write Iso 400     # writes, then verifies by read-back
 python3 analysis/hbctl.py capture 10 5      # intervalometer: 10 shots, 5 s apart
@@ -32,6 +33,10 @@ python3 analysis/hbctl.py storage           # list the card
 ```
 
 The camera must not be held by Phocus — it claims the same USB interface.
+
+Run it from your own terminal, not from inside another application's sandbox: it
+writes captures to the folder you choose, and a sandboxed process can be denied
+that write (which looks like the camera failing to save).
 
 ## Documentation
 
@@ -59,11 +64,11 @@ Negative results cost the most to rediscover, so they are recorded in full:
   unwired). The firmware is signed and there is no root path, so this is a
   vulnerability-research project, not a configuration change.
 
-## Still open
+## Caveats on download
 
-**File download over USB.** Images arrive on the wire to the viewer, but pulling a finished
-capture off the card still needs the volume or a card reader. `op 7`/`0x0004` is refused
-unless some state Phocus establishes first is present; only listing works.
+Download needs a **tether-transfer session** (the 181-command connect sequence), the camera
+screen **on**, and the body in **shooting mode** — it refuses transfers while asleep or in a
+menu. `hbctl.py download --session` does the whole sequence. See `PROTOCOL.md` §9d.
 
 ## Safety
 
@@ -72,3 +77,12 @@ unless some state Phocus establishes first is present; only listing works.
   rather than silent.
 * The one genuinely risky path — modifying the camera — has not been attempted and the
   notes above explain why it is a different risk class.
+
+## Design note: why the preview is a separate window
+
+Tk's photo-image path costs real compositing time per frame — measured at 4.7 ms of
+Python, but the window redraws made the controls feel dead. ffplay is a native video
+renderer and stays smooth. So `viewer.py` puts the picture in ffplay and keeps only the
+controls in Tk; the two are joined by a pipe carrying the same H.264 the camera sends.
+
+`liveapp.py` is the same pipeline with no controls at all, useful as a sanity check.

@@ -31,6 +31,8 @@ Commands
   hbctl.py dump                       everything: value + descriptor
   hbctl.py watch Iso Battery          poll and print changes
   hbctl.py snapshot out.json          full state as JSON
+  hbctl.py session                    establish the tether-transfer session
+  hbctl.py download [dir] [--session] capture and pull the raw off the camera
   hbctl.py capture [count] [delay]    fire the shutter
   hbctl.py storage                    list the card
   hbctl.py raw <op> <code> [hex]      arbitrary frame (writes need --write)
@@ -142,19 +144,14 @@ def encode_typed(tag, value):
 # ---------------------------------------------------------------- transport
 
 def reset_usb():
-    """Drop pyusb's cached libusb context.
+    """DEPRECATED - do not call. Kept only so old code fails loudly.
 
-    pyusb keeps one backend/context for the process lifetime. After the camera drops
-    off the bus and re-enumerates, that context goes stale and find() keeps returning
-    nothing even though the OS lists the device. Clearing it forces a fresh library
-    load and a fresh context, which is what makes reconnection actually work.
+    Nulling pyusb's module globals invalidates every live usb.core.Device: their
+    finalisers call libusb_unref_device() on freed state and the process dies with
+    EXC_ARM_DA_ALIGN inside libusb_unref_device. It was never needed either - the
+    libusb1 backend re-enumerates the bus on every find() call.
     """
-    try:
-        import usb.backend.libusb1 as libusb1
-        libusb1._lib_object = None
-        libusb1._lib = None
-    except Exception:
-        pass
+    raise RuntimeError("reset_usb() is unsafe: it crashes on device finalisation")
 
 
 class Camera:
@@ -173,7 +170,11 @@ class Camera:
             usb.util.release_interface(self.dev, IFACE)
         except Exception:
             pass
-        usb.util.dispose_resources(self.dev)
+        try:
+            usb.util.dispose_resources(self.dev)
+        except Exception:
+            pass
+        self.dev = None          # drop the reference while the backend is still alive
 
     def __enter__(self):
         return self
@@ -256,6 +257,7 @@ class Camera:
         return applied, before, after, ack
 
     def release(self, timeout=15.0, commit=True):
+        self.last_capture_path = None
         """Fire the shutter, then complete the capture handshake.
 
         1. op 1 / code 0x0001 / empty      -> shutter actuates
@@ -283,10 +285,21 @@ class Camera:
                 continue
             p = b[5:5 + b[4]]
             if len(p) >= 3 and p[2] == 0x40:
+                # older/firmware-varies: capture event carrying a token
                 data = p[3:]
                 token = int.from_bytes(data[1:5], "little") if len(data) >= 5 else None
                 break
-        if token is None or not commit:
+            if len(p) >= 3 and p[2] == 0x45:
+                # this firmware announces the written file instead:
+                #   <01 00> <id u32> <path>
+                data = p[3:]
+                if len(data) >= 6:
+                    token = int.from_bytes(data[2:6], "little")
+                    self.last_capture_path = data[6:].decode("latin-1", "replace")
+                break
+        if token is None or not commit or self.last_capture_path:
+            # when the body wrote the file itself and told us the path, there is
+            # nothing to commit - Phocus's extra two frames are for tether transfer
             return token, []
 
         v = bytes([0, 0]) + struct.pack("<H", token & 0xFFFF) + bytes(10)
@@ -294,6 +307,92 @@ class Camera:
         a2 = self.call(OP_CMD, 0x0009, struct.pack("<I", token))
         return token, [a1[1].hex(" ") if a1 else "no reply",
                        a2[1].hex(" ") if a2 else "no reply"]
+
+    def flush_stream(self, seconds=3.0):
+        """Drain live view for a while. Keeps the camera awake (it refuses transfers
+        while the screen is off) and clears any queued frames."""
+        end = time.time() + seconds
+        n = 0
+        while time.time() < end:
+            try:
+                self.dev.read(EP_DATA, 1 << 18, timeout=200)
+                n += 1
+            except Exception:
+                pass
+        return n
+
+    def capture_token(self, timeout=20.0):
+        """Trigger a capture and wait specifically for the 0x40 tether token.
+
+        Unlike release(), this ignores the 0x45 "file written" event: when the camera
+        is in a tether-transfer session it offers the image to the host and that token is
+        what `download` needs. Falls back to None if no token is offered.
+        """
+        self.seq = (self.seq + 1) & 0x7FFF
+        payload = struct.pack("<H", self.seq) + bytes([OP_CMD]) + struct.pack("<H", 0x0001)
+        self.dev.write(EP_OUT, bytes([0x04, 0x00, 0x08, 0x05, len(payload)]) + payload,
+                       timeout=self.timeout)
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                b = bytes(self.dev.read(EP_IN, 1024, timeout=self.timeout))
+            except usb.core.USBTimeoutError:
+                continue
+            if len(b) < 7 or b[0] != 0x03:
+                continue
+            p = b[5:5 + b[4]]
+            if len(p) >= 3 and p[2] == 0x40:
+                return int.from_bytes(p[4:8], "little")
+        return None
+
+    def download(self, token, outfile, max_bytes=1 << 28, idle=4.0):
+        """Pull the pending capture for `token` off the camera. Returns bytes written.
+
+        Only works once the camera is in a "tether transfer" session - see
+        replay_session(). Without that it answers ack 8 and nothing arrives.
+        """
+        arg = bytes([0, 0]) + token.to_bytes(2, "little") + bytes(10)
+        ok = False
+        for attempt in range(3):
+            r = self.call(OP_BLOCK, 0x0004, arg)
+            if r and r[1] == b"\x00\x00\x00\x00":
+                ok = True
+                break
+            # a sleeping / screen-off body refuses; the token stays valid briefly
+            time.sleep(0.6)
+        if not ok:
+            return 0
+        total = 0
+        last = time.time()
+        with open(outfile, "wb") as fh:
+            while time.time() - last < idle and total < max_bytes:
+                try:
+                    chunk = bytes(self.dev.read(EP_DATA, 8 << 20, timeout=1500))
+                except Exception:
+                    break
+                fh.write(chunk)
+                total += len(chunk)
+                last = time.time()
+        return total
+
+    def replay_session(self, verbose=False):
+        """Replay Phocus's 181-command connect sequence.
+
+        This is what makes captures offer themselves to the host (a 0x40 token event)
+        instead of only being written to the card. Once per connection is enough -
+        subsequent captures keep offering tokens.
+        """
+        import liveview_replay as lr
+        seq = lr.load_sequence()
+        for op, code, val in seq:
+            try:
+                self.call(op, code, val, retries=0)
+            except Exception:
+                pass
+            if op == OP_BLOCK:
+                lr.drain(self, 200)
+        if verbose:
+            print("session replayed (%d commands)" % len(seq))
 
     def storage(self, expected=2770004):
         """List the card. The blob arrives on 0x84, possibly in several reads."""
@@ -416,6 +515,33 @@ def main():
                 print("shot %d: token 0x%04x  commit acks %s" % (i + 1, token, acks))
                 if i + 1 < n:
                     time.sleep(float(rest[1]) if len(rest) > 1 else 2.0)
+
+        elif cmd == "session":
+            cam.replay_session(verbose=True)
+
+        elif cmd == "download":
+            outdir = rest[0] if rest else "."
+            import os
+            if "--session" in sys.argv:
+                cam.replay_session(verbose=True)
+            # the body refuses transfers while its screen is off; live view streaming
+            # is what keeps it awake, so pump a few seconds of it before triggering
+            cam.flush_stream(3.0)
+            time.sleep(0.5)
+            token = cam.capture_token()
+            if token is None:
+                print("no tether token: the session is not established "
+                      "(try --session, and keep live view running)")
+                return
+            name = (getattr(cam, "last_capture_path", None) or "").rsplit("/", 1)[-1]
+            if not name:
+                name = "capture_%04x.3fr" % token
+            out = os.path.join(outdir, name)
+            n = cam.download(token, out)
+            if n:
+                print("downloaded %s (%d bytes, %.1f MiB)" % (out, n, n / 1048576.0))
+            else:
+                print("transfer refused (ack) - the session is probably not established")
 
         elif cmd == "storage":
             paths = cam.storage()

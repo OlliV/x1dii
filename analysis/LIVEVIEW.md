@@ -3,8 +3,8 @@
 The X1D II streams a live preview over USB that any host can consume. This is how it
 works and how to drive it, recovered by tracing Phocus and then reproduced without it.
 
-Applications: [`viewer.py`](viewer.py) is the full tethering window (preview, capture,
-exposure controls); [`liveapp.py`](liveapp.py) is the minimal preview-only version.
+Applications: [`viewer.py`](viewer.py) is the tethering app (controls in Tk, preview in an
+a separate ffplay window); [`liveapp.py`](liveapp.py) is preview-only.
 
 ---
 
@@ -163,6 +163,21 @@ which adds real motion blur on top of the compression.
 the `LIVE` magic, rejects implausible lengths, and **drops the control packets**. Both
 `viewer.py` and `liveapp.py` use it, so there is no second copy to drift out of sync — an
 earlier duplicate in `viewer.py` did not filter them and reproduced the stall.
+
+## 5c. Thermal protection has no readable signal
+
+When the sensor gets hot the body refuses live view (`ack 0x09` instead of `0x00`) and
+displays "image sensor too hot". Several of the stalls chased during development were
+this, not software.
+
+There is no way to read it: `0x000b` (`SensorUnitTemperature`) is **not advertised** and
+answers with an empty reply, as does `0x000c` (Accelerometer). So the viewer infers it
+from duration — a refusal that clears quickly is the screen being off; one that persists
+past ~20 s is treated as thermal (`refused for Ns - likely too hot, let it cool`).
+
+Confirmed preconditions the body enforces, all of which look identical from the host:
+screen off, a settings menu open, or the sensor too hot. Only a power cycle reliably
+clears the last one.
 
 ## 6. Rough edges
 

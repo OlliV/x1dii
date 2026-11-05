@@ -4,31 +4,38 @@
 
 ## 0. Resume here
 
-**Start with [`README.md`](README.md)** — it is the index: what works, how to run it, and
-the negative results.
-
-The camera is fully driveable from a host with no Phocus and no SDK:
+**Start with [`README.md`](README.md)** — the index: what works, how to run it, and the
+negative results.
 
 ```bash
-python3 analysis/viewer.py                  # tethering window: preview, capture, exposure
+python3 analysis/viewer.py                  # controls + ffplay preview, capture, save
 python3 analysis/hbctl.py dump              # 87 parameters, value + descriptor
-python3 analysis/hbctl.py write Iso 400     # writes, then verifies by read-back
-python3 analysis/hbctl.py capture 10 5      # intervalometer
+python3 analysis/hbctl.py download /tmp --session   # capture and pull the raw
 python3 analysis/hbctl.py storage           # list the card
 ```
 
-Verified on hardware: firmware `1.5.2`, serial `VQ20200944`, integer and double writes
-round-tripping, capture committing files to the card, live view at 2756×2064 H.264.
+Working, verified on hardware (X1D II 50C, firmware 1.5.2):
 
-The two things that took longest to get right, and are worth knowing before touching this:
+* live view — 2756×2064 H.264, ~11 fps, started by one command
+* capture — to card, and optionally downloaded as the full 50 MP `.3FR` (`8272 × 6200`)
+* exposure control — aperture / shutter / ISO, each verified by read-back
+* card listing on both slots, without the mass-storage volume
+* reconnection across unplug and camera reboot
 
-1. **Values are typed ASCII in both directions** and writes reuse the read format — a write
-   is `op 3` carrying `"I1,400"`. `r` values are rationals, `hi << 16 | lo`.
-2. **Live view is one command** (`op 1` / `0x0007` / first byte `0x0c`) and the channel
-   interleaves 1 KB control packets that a naive parser feeds to the decoder, which is what
-   makes it look like the stream is broken.
+Things that cost the most to learn, in order:
 
-Open: file download over USB (§1.7). Everything else is done or ruled out.
+1. **Values are typed ASCII both ways**; writes reuse the read format (`op 3`, `"I1,400"`).
+   `r` values are rationals, `hi << 16 | lo`.
+2. **Live view is one command** and the channel interleaves 1 KB control packets
+   (`w = h = 0`) that corrupt a naive parser.
+3. **Download needs a tether-transfer session** — the 181-command connect replay. Outside
+   it the camera writes to the card and answers `ack 8`.
+4. **Many failures are the body protecting itself** — screen off, a menu open, or the
+   sensor too hot. All three look identical as `ack 09` and none is readable: `0x000b`
+   (temperature) is not implemented.
+
+Ruled out: hidden video modes (not on the wire), preview bitrate (firmware-fixed), ProRes
+(needs on-camera code execution *and* a 4:2:2 pipeline the sensor profile lacks).
 
 Environment notes:
 * camera must not be held by Phocus (`claim_interface(3)` fails while it runs);

@@ -237,6 +237,57 @@ body fires the shutter and writes nothing.
 Note the storage listing blob's first byte is the **entry count**, not a magic value: it was
 `0x09` with 9 files and `0x0a` once the capture added a tenth.
 
+## 9c. Storage transfer (`op 7`) — mapped, download not cracked
+
+`op 7` is the bulk-data command. Sweeping the sub-command byte against a real file id:
+
+| kind | result |
+|---|---|
+| 2 | ack `0`, returns a fixed 1024-byte info blob (identical regardless of id) |
+| 9 | ack `0`, returns the directory listing (2,770,004 bytes on this card) |
+| 4 | ack `8` — valid request, **refused** |
+| 0,1,3,5–8 | ack `11` — invalid |
+
+kind 4 is the file read. It is structurally accepted: putting a 32-bit id at value offset
+2 yields `08` (refused) whereas a wrong offset yields `11` (invalid), so the layout is
+right and a precondition is missing. Phocus sends it ~20 ms after a capture event with the
+capture token as the argument.
+
+**This firmware does not emit that event.** Capturing here produces `0x42` (parameter
+change) and `0x45` (new file) events, but no `0x40` with a token:
+
+```
+op 0x45:  <01 00> <id u32> <path>
+         01 00 06 5c 06 1f | /SD1/DCIM/102HASBL/B0002338.3FR
+```
+
+That is useful in its own right — a host can learn that a capture landed, its id, and its
+path, without polling the directory. But without the token, kind 4 cannot be driven, so
+## 9d. File download — solved
+
+Download works, and the mechanism is the one described above:
+
+1. `op 1` / `0x0001` (empty) fires the shutter.
+2. In a **tether-transfer session** the camera answers with a `0x40` event carrying a token.
+3. `op 7` / `0x0004` with that token (u16 at value offset 2) is accepted (ack `0`).
+4. The raw streams on `0x84` in 8 MiB blocks until it goes quiet.
+
+Verified: **106,722,304 bytes** (101.8 MiB) downloaded, starting `49 49 2a 00`; macOS
+reports it as `format: 3fr`, `8272 × 6200` — the full 50 MP sensor. The file is the raw as
+it sits on the card, not Phocus's `.fff` re-wrap.
+
+**The session is the whole trick.** Outside it, the camera writes to the card and emits
+`0x45` instead, and `kind4` answers `08`. The session is the 181-command connect sequence
+Phocus performs; once established, `0x40` tokens keep coming for later captures in that
+connection. `hbctl` does this with `session` / `download --session`.
+
+Preconditions found the hard way — the body refuses transfers when:
+
+* its screen is off (live view streaming keeps it awake), or
+* it is sitting in a settings screen rather than shooting mode.
+
+Until then, files come off via the card or the camera's mass-storage mode.
+
 ## 10. Tooling
 
 ```bash
