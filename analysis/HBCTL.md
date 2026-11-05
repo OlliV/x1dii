@@ -23,6 +23,7 @@ with `Errno 13` while it runs.
 | `dump` | every parameter with value and descriptor |
 | `watch [<name>…]` | poll and print changes with timestamps |
 | `snapshot <file.json>` | full state as JSON |
+| `focus-stack [frames] [step] [init_s] [exp_ms]` | focus bracketing; step 0=ExtraSmall … 4=ExtraLarge (live view off) |
 | `storage` | list the card |
 | `raw <op> <code> [hex]` | arbitrary frame; write ops need `--write` |
 

@@ -472,3 +472,14 @@ Still missing: the byte encoding of a request (payload layout for a named parame
 Next: capture on a TCP transport. The camera's Wi-Fi exposes 80/443 (Phocus HTTP) when
 reachable; desktop Phocus does not use Wi-Fi, so the capture would need Phocus Mobile.
 Otherwise, reverse `CCameraDeviceUSBx::ReadParameter` / `WriteParameter` directly.
+
+---
+
+## Addendum 11 — signing audit (2026-11-05)
+
+Prompted by the "short key / flawed check" question. The visible OTA key is RSA-2048/SHA-1,
+not short; the `testkey` in `/etc/security/otacerts.zip` is a different RSA-2048 key, and
+it is not the public AOSP one. The real findings are about coverage, not key strength:
+`upgrade.sh` verifies only `normal.img`, and the host upgrade path for CPLD/FPGA/SPC/SUC
+has no signature check. Full detail and reproduction commands:
+[`SIGNING-AUDIT.md`](SIGNING-AUDIT.md).

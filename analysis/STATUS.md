@@ -35,7 +35,14 @@ Things that cost the most to learn, in order:
    (temperature) is not implemented.
 
 Ruled out: hidden video modes (not on the wire), preview bitrate (firmware-fixed), ProRes
-(needs on-camera code execution *and* a 4:2:2 pipeline the sensor profile lacks).
+(needs on-camera code execution *and* a 4:2:2 pipeline the sensor profile lacks), and
+replacing the Android system — the boot bundle is DJI-signed and TEE-verified, the system
+payload is covered only by recovery's whole-file check, and the peripheral upgrade path has
+no signature check. See [`UPGRADE-AND-SIGNING.md`](UPGRADE-AND-SIGNING.md) and the 2026-11-05
+[`SIGNING-AUDIT.md`](SIGNING-AUDIT.md).
+
+Still worth doing, all host-side: [`FUTURE-WORK.md`](FUTURE-WORK.md) — focus control is
+the big untouched one.
 
 Environment notes:
 * camera must not be held by Phocus (`claim_interface(3)` fails while it runs);
@@ -230,5 +237,7 @@ Scene notes for the Phocus side are in `PROTOCOL.md` §7 (arch offsets, tooling)
 | `trace-phocus-capture.log` | raw libusb trace of connect + one capture |
 | `trace-liveview-2064.log` | raw trace of a live-view session (2756×2064) |
 | `PRORES-FEATURE-NOTE.md` | ProRes design note: contract, gaps, phased plan |
+| `UPGRADE-AND-SIGNING.md` | the signing gate: OTA key, `dji_fw_verify`, upgrade flow |
+| `SIGNING-AUDIT.md` | 2026-11-05 audit: key sizes, SHA-1, gate coverage, unauthenticated peripherals |
 | `parameter_table.txt` | 170 parameter codes |
 | `extracted/hbl-*.sh` | upgrade scripts recovered from 1.5.2 |

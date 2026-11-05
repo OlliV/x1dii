@@ -34,6 +34,8 @@ Commands
   hbctl.py session                    establish the tether-transfer session
   hbctl.py download [dir] [--session] capture and pull the raw off the camera
   hbctl.py capture [count] [delay]    fire the shutter
+  hbctl.py focus-stack [frames] [step] [init_delay_s] [exp_delay_ms]
+                                      run the camera's focus bracketing
   hbctl.py storage                    list the card
   hbctl.py raw <op> <code> [hex]      arbitrary frame (writes need --write)
 
@@ -398,6 +400,54 @@ class Camera:
                 pass
         return n
 
+    def focus_bracket(self, frames=3, step=0, initial_delay=None,
+                      exposure_delay=None, timeout=120.0):
+        """Run the camera's own focus bracketing and return the files it wrote.
+
+        Live view must be OFF: with the preview streaming, a host trigger takes a single
+        frame and cancels the bracket, so the sequence never runs. Focus bracketing also
+        needs the lens to have travel left in both directions - "Lens limit reached" means
+        it ran out, so start from a mid-range focus position or use fewer frames.
+
+        `step` is the camera's named scale, 0..4 = ExtraSmall, Small, Medium, Large,
+        ExtraLarge (confirmed by changing the menu and watching 0x006a). It is NOT a
+        distance: 0x006d, which looks like one (125..16000), does not follow it.
+        """
+        self.call(OP_CMD, 0x0007, bytes(10), retries=0)     # live view off
+        time.sleep(0.6)
+        self.write(0x006b, frames)                          # FocusBracketingFrames
+        self.write(0x006a, step)                            # step size: 0..4 named scale
+        if initial_delay is not None:                       # 0x006c, seconds
+            self.write(0x006c, initial_delay)
+        if exposure_delay is not None:                      # 0x006d, milliseconds
+            self.write(0x006d, exposure_delay)
+        self.write(0x0041, 5)                               # DriveModeMode = focus bracket
+        if self.read(0x0041) != 5:
+            raise RuntimeError("camera refused drive mode 5")
+
+        self.seq = (self.seq + 1) & 0x7FFF
+        payload = struct.pack("<H", self.seq) + bytes([OP_CMD]) + struct.pack("<H", 0x0001)
+        self.dev.write(EP_OUT, bytes([0x04, 0x00, 0x08, 0x05, len(payload)]) + payload,
+                       timeout=self.timeout)
+
+        seen, end = [], time.time() + timeout
+        while time.time() < end and len(seen) < frames:
+            try:
+                b = bytes(self.dev.read(EP_IN, 1024, timeout=800))
+            except usb.core.USBTimeoutError:
+                continue
+            if len(b) < 7 or b[0] != 0x03:
+                continue
+            p = b[5:5 + b[4]]
+            if len(p) >= 3 and p[2] == 0x45:
+                path = p[3:][6:].decode("latin-1", "replace")
+                if path.startswith("/SD1"):        # one event per slot; count the card once
+                    seen.append(path)
+                    if len(seen) >= frames:
+                        break
+        self.write(0x0041, 0)                              # back to single shot
+        return seen
+
     def capture_token(self, timeout=20.0):
         """Trigger a capture and wait specifically for the 0x40 tether token.
 
@@ -626,6 +676,21 @@ def main():
                 print("shot %d: token 0x%04x  commit acks %s" % (i + 1, token, acks))
                 if i + 1 < n:
                     time.sleep(float(rest[1]) if len(rest) > 1 else 2.0)
+
+        elif cmd == "focus-stack":
+            frames = int(rest[0]) if rest else 3
+            step = int(rest[1]) if len(rest) > 1 else 0
+            init_delay = int(rest[2]) if len(rest) > 2 else None      # seconds
+            exp_delay = int(rest[3]) if len(rest) > 3 else None       # milliseconds
+            names = {0: "ExtraSmall", 1: "Small", 2: "Medium", 3: "Large", 4: "ExtraLarge"}
+            print("focus bracketing: %d frames, step %s (live view must be off)"
+                  % (frames, names.get(step, step)))
+            files = cam.focus_bracket(frames=frames, step=step,
+                                      initial_delay=init_delay,
+                                      exposure_delay=exp_delay)
+            print("captured %d/%d frames:" % (len(files), frames))
+            for f in files:
+                print("   ", f)
 
         elif cmd == "session":
             cam.replay_session(verbose=True)

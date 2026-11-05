@@ -90,6 +90,9 @@ that write (which looks like the camera failing to save).
 | [`FINDINGS.md`](FINDINGS.md) | chronological log, including corrections |
 | [`PARAMETERS-LIVE.md`](PARAMETERS-LIVE.md) | every parameter with its live value and descriptor |
 | [`PRORES-FEATURE-NOTE.md`](PRORES-FEATURE-NOTE.md) | ProRes design note (parked, see below) |
+| [`UPGRADE-AND-SIGNING.md`](UPGRADE-AND-SIGNING.md) | why the Android system cannot be replaced: DJI signing, the SD-card upgrade path, `dji_fw_verify` |
+| [`SIGNING-AUDIT.md`](SIGNING-AUDIT.md) | 2026-11-05 audit: key sizes, SHA-1 reliance, what the gate covers, the unauthenticated peripheral path |
+| [`FUTURE-WORK.md`](FUTURE-WORK.md) | what is still worth doing, host-side: focus control, camera automation, card downloads |
 
 ## Ruled out — and why it matters
 
@@ -102,7 +105,7 @@ Negative results cost the most to rediscover, so they are recorded in full:
   a bitrate and does nothing; `LiveVideoMode` writes are rejected. Blocky-then-mushy is the
   encoder, not the transport.
 * **ProRes** needs code running on the body (`proresenc`, `/dev/proresenc` exist but are
-  unwired). The firmware is signed and there is no root path, so this is a
+  unwired). The Android boot bundle is signed and there is no root path, so this is a
   vulnerability-research project, not a configuration change.
 
 ## Caveats on download
