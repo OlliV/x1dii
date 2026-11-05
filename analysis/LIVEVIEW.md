@@ -171,7 +171,9 @@ displays "image sensor too hot". Several of the stalls chased during development
 this, not software.
 
 There is no way to read it: `0x000b` (`SensorUnitTemperature`) is **not advertised** and
-answers with an empty reply, as does `0x000c` (Accelerometer). So the viewer infers it
+answers with an empty reply, as does `0x000c` (Accelerometer). `Device0Status` / `Device1Status` (range 0–5) were checked
+*while the body was hot and refusing* and both still read `0`, so they do not carry thermal
+state either. There is no thermal signal anywhere in the protocol. So the viewer infers it
 from duration — a refusal that clears quickly is the screen being off; one that persists
 past ~20 s is treated as thermal (`refused for Ns - likely too hot, let it cool`).
 
