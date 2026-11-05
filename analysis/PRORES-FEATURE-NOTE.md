@@ -247,7 +247,7 @@ buffers, independent of the camera pipeline.
 | driver | `/system/lib/modules/proresenc_mod.ko` |
 
 Related notes: `analysis/FINDINGS.md` (container decryption, firmware structure, GUI
-architecture), `analysis/cim_unpack.py` (offline CIM decryptor).
+architecture), `tools/cim_unpack.py` (offline CIM decryptor).
 
 ---
 

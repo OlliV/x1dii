@@ -18,14 +18,14 @@ inferred, except where marked *(unverified)*.
 exactly 23 symbols. A throwaway copy of the app had `LibUsb.framework`'s binary replaced by
 a shim that defines all 23, logs every transfer, and forwards to the real dylib via
 `dlopen`. Because the shim *is* the library HBTethered links against, two-level namespace
-binding cannot bypass it — no interposing needed. Source: [`usbshim.c`](usbshim.c).
+binding cannot bypass it — no interposing needed. Source: [`usbshim.c`](../tools/usbshim.c).
 
 With that in place, connecting in Phocus and taking one photo produced
 [`trace-phocus-capture.log`](trace-phocus-capture.log): 197 commands and 24 image
-transfers. [`parse_trace.py`](parse_trace.py) decodes it to
+transfers. [`parse_trace.py`](../tools/parse_trace.py) decodes it to
 [`trace-phocus-capture.txt`](trace-phocus-capture.txt).
 
-The result was then re-implemented from scratch in [`hbctl.py`](hbctl.py) and tested with
+The result was then re-implemented from scratch in [`hbctl.py`](../tools/hbctl.py) and tested with
 Phocus quit. It reads firmware, serial and battery with no handshake at all.
 
 ---
@@ -291,11 +291,11 @@ Until then, files come off via the card or the camera's mass-storage mode.
 ## 10. Tooling
 
 ```bash
-python3 analysis/hbctl.py list                 # 87 advertised parameters
-python3 analysis/hbctl.py read FirmwareVersion SerialString Battery
-python3 analysis/hbctl.py dump                 # every parameter: value + descriptor
-python3 analysis/hbctl.py describe ExposureTime
-python3 analysis/hbctl.py raw 2 0x0089         # arbitrary op/code
+python3 tools/hbctl.py list                 # 87 advertised parameters
+python3 tools/hbctl.py read FirmwareVersion SerialString Battery
+python3 tools/hbctl.py dump                 # every parameter: value + descriptor
+python3 tools/hbctl.py describe ExposureTime
+python3 tools/hbctl.py raw 2 0x0089         # arbitrary op/code
 ```
 
 Writes are refused unless `--write` is passed. `pyusb` is needed; see `STATUS.md` for the
@@ -319,7 +319,7 @@ Writes are refused unless `--write` is passed. `pyusb` is needed; see `STATUS.md
 
 If the trace ever needs re-taking: copy Phocus.app, back up
 `Contents/Frameworks/LibUsb.framework/Versions/A/LibUsb` to `LibUsb.real` there, build
-[`usbshim.c`](usbshim.c) with
+[`usbshim.c`](../tools/usbshim.c) with
 
 ```
 clang -dynamiclib -arch arm64 -arch x86_64 -I/opt/homebrew/include/libusb-1.0 \

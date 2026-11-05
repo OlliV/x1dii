@@ -45,7 +45,8 @@ def load_codes(path=None):
     """Parse the parameter table dump into {code: name}."""
     import os
     if path is None:
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parameter-table.txt")
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "lib", "parameter_table.txt")
     codes = {}
     try:
         for line in open(path):

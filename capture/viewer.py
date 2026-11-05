@@ -5,7 +5,7 @@ Video goes to ffplay in its own window; this window is only the controls. That s
 deliberate: Tk's photo-image path costs real compositing time per frame and made the
 buttons feel dead, while ffplay is a native video renderer and stays smooth.
 
-    python3 viewer.py [--record out.h264]
+    python3 capture/viewer.py [--record out.h264]
 
   reader thread    0x84 -> H.264 payloads -> deque(maxlen=N), drops oldest
   writer thread    deque -> ffplay stdin (blocking; isolated from the reader)
@@ -25,10 +25,12 @@ import time
 import tkinter as tk
 from tkinter import ttk
 
-import hbctl          # noqa: E402  (adds /tmp/pylibs to sys.path)
-import liveview_stream as ls
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import usb.core       # noqa: E402  must come after hbctl
+from lib import hbctl              # noqa: E402
+from lib import liveview as ls     # noqa: E402
+
+import usb.core                    # noqa: E402  must come after hbctl
 
 QUEUE_MAX = 8
 BTN_BG = "#f0f0f0"
@@ -99,6 +101,8 @@ class App:
         self.session_ok = False
         self.download_dir = None
         self._saved_path = None
+        self._combo_code = {"Aperture": 0x0008, "Shutter": 0x0009, "ISO": 0x000a}
+        self._applied = {}
         self._cfg = os.path.expanduser("~/.x1d_viewer.json")
         self._logf = open("/tmp/viewer.log", "a", buffering=1)
         self._log("--- viewer start ---")
@@ -164,6 +168,7 @@ class App:
 
         self._try_connect()
         self._load_controls()
+        self.root.after(300, self._watch_combos)
 
     # ---- ui helpers
 
@@ -337,7 +342,30 @@ class App:
                 else:
                     cb.set("n/a")
                     cb.configure(state="disabled")
+                self._applied[label] = cb.get()
                 self._log("%s: %d choices current=%r" % (label, len(order), cur))
+
+    def _watch_combos(self):
+        """Apply a dropdown change as soon as it happens.
+
+        ttk's aqua theme does not reliably emit <<ComboboxSelected>> on a click - it
+        fires on focus-out or Return instead, which is why selecting a value appeared to
+        do nothing until Enter was pressed. Polling the widget's own value sidesteps the
+        missing event entirely.
+        """
+        if not self.running:
+            return
+        for label, code in self._combo_code.items():
+            cb = getattr(self, "cb_" + label.lower())
+            values = getattr(self, "vals_" + label.lower())
+            text = cb.get()
+            if not text or text not in values:
+                continue
+            if self._applied.get(label) == text:
+                continue
+            self._applied[label] = text
+            self._set_param(code, label)
+        self.root.after(300, self._watch_combos)
 
     def _set_param(self, code, label):
         cb = getattr(self, "cb_" + label.lower())
@@ -346,6 +374,7 @@ class App:
         if text not in values:
             return
         raw = values[text]
+        self._applied[label] = text
         self._say("%s: setting %s ..." % (label, text))
 
         def run():

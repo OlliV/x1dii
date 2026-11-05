@@ -3,7 +3,7 @@
 Talks to the camera directly over USB. No Phocus, no SDK, no mass-storage volume.
 
 ```
-python3 analysis/hbctl.py <command> [args]
+python3 tools/hbctl.py <command> [args]
 ```
 
 It needs `pyusb`; if that isn't importable it falls back to `/tmp/pylibs` (see
@@ -27,12 +27,12 @@ with `Errno 13` while it runs.
 | `raw <op> <code> [hex]` | arbitrary frame; write ops need `--write` |
 
 ```
-$ python3 analysis/hbctl.py read FirmwareVersion Battery Iso
+$ python3 tools/hbctl.py read FirmwareVersion Battery Iso
 0x001b FirmwareVersion        '1.5.2'
 0x002f Battery                95
 0x000a Iso                    100.0
 
-$ python3 analysis/hbctl.py write Iso 400
+$ python3 tools/hbctl.py write Iso 400
 Iso                    400 -> 400.0   (was 100.0, ack 00 00 00 00)
 ```
 

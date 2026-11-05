@@ -21,15 +21,34 @@ command is one the camera's own software issues.
 | Reconnection | `viewer.py` | survives unplug/replug and camera reboots |
 | Raw download | `hbctl.py download --session` | full 50 MP `.3FR` over USB, no card reader |
 
+## Layout
+
+```
+lib/        shared library code - the camera driver and live-view helpers
+  hbctl.py          protocol, Camera class, readable/writable parameters
+  liveview.py       frame parsing, connect sequence, stream helpers
+  parameter_table.txt   the 168 code -> name mappings
+tools/      command-line tools, each runnable on its own
+  hbctl.py          parameter read/write/dump, storage, capture, download
+  liveview_replay.py, liveview_min.py   live-view experiments
+  cim_unpack.py, parse_trace.py, watch_events.py, usbshim.c
+capture/    the interactive apps
+  viewer.py         tethering: controls + ffplay preview
+  liveapp.py        preview only, no controls
+analysis/   documentation and the raw traces it refers to
+```
+
+Run the app with `./run.sh`, or any tool as `python3 tools/<name>.py`.
+
 ## Quick start
 
 ```bash
 # needs pyusb; falls back to /tmp/pylibs
-python3 analysis/viewer.py                  # controls window + ffplay preview
-python3 analysis/hbctl.py dump              # every parameter, value + descriptor
-python3 analysis/hbctl.py write Iso 400     # writes, then verifies by read-back
-python3 analysis/hbctl.py capture 10 5      # intervalometer: 10 shots, 5 s apart
-python3 analysis/hbctl.py storage           # list the card
+python3 capture/viewer.py                  # controls window + ffplay preview
+python3 tools/hbctl.py dump              # every parameter, value + descriptor
+python3 tools/hbctl.py write Iso 400     # writes, then verifies by read-back
+python3 tools/hbctl.py capture 10 5      # intervalometer: 10 shots, 5 s apart
+python3 tools/hbctl.py storage           # list the card
 ```
 
 The camera must not be held by Phocus — it claims the same USB interface.

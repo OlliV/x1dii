@@ -14,8 +14,10 @@ import subprocess
 import sys
 import time
 
-import hbctl
-import liveview_stream as ls
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from lib import hbctl              # noqa: E402
+from lib import liveview as ls     # noqa: E402
 
 
 def main():

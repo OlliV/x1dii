@@ -66,7 +66,7 @@ NAMES = {}
 
 
 def _load_table():
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parameter-table.txt")
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parameter_table.txt")
     try:
         for line in open(path):
             m = re.match(r"\s*(0x[0-9a-fA-F]{4})\s+(\S+)", line)
@@ -382,15 +382,15 @@ class Camera:
         instead of only being written to the card. Once per connection is enough -
         subsequent captures keep offering tokens.
         """
-        import liveview_replay as lr
-        seq = lr.load_sequence()
+        from . import liveview as lv
+        seq = lv.load_sequence()
         for op, code, val in seq:
             try:
                 self.call(op, code, val, retries=0)
             except Exception:
                 pass
             if op == OP_BLOCK:
-                lr.drain(self, 200)
+                lv.drain(self, 200)
         if verbose:
             print("session replayed (%d commands)" % len(seq))
 
@@ -565,6 +565,3 @@ def main():
         else:
             print(__doc__)
 
-
-if __name__ == "__main__":
-    main()

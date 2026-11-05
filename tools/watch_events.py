@@ -20,7 +20,8 @@ NAMES = {}
 
 def load_names():
     import os
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parameter-table.txt")
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "lib", "parameter_table.txt")
     try:
         for line in open(path):
             m = re.match(r"\s*(0x[0-9a-fA-F]{4})\s+(\S+)", line)

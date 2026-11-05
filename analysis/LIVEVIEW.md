@@ -3,8 +3,8 @@
 The X1D II streams a live preview over USB that any host can consume. This is how it
 works and how to drive it, recovered by tracing Phocus and then reproduced without it.
 
-Applications: [`viewer.py`](viewer.py) is the tethering app (controls in Tk, preview in an
-a separate ffplay window); [`liveapp.py`](liveapp.py) is preview-only.
+Applications: [`viewer.py`](../capture/viewer.py) is the tethering app (controls in Tk, preview in an
+a separate ffplay window); [`liveapp.py`](../capture/liveapp.py) is preview-only.
 
 ---
 
@@ -122,12 +122,12 @@ ffplay -loglevel error -fflags nobuffer -flags low_delay -framedrop \
        -f h264 -window_title "X1D II live view" -i -
 ```
 
-[`liveapp.py`](liveapp.py) connects, sustains the stream, and pipes each frame's payload
+[`liveapp.py`](../capture/liveapp.py) connects, sustains the stream, and pipes each frame's payload
 into that process:
 
 ```bash
-python3 analysis/liveapp.py --seconds 60
-python3 analysis/liveapp.py --record /tmp/preview.h264
+python3 capture/liveapp.py --seconds 60
+python3 capture/liveapp.py --record /tmp/preview.h264
 ```
 
 Observed end to end: 223 frames in 20 s (11.1 fps) with a live window on screen.

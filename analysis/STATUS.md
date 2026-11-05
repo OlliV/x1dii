@@ -8,10 +8,10 @@
 negative results.
 
 ```bash
-python3 analysis/viewer.py                  # controls + ffplay preview, capture, save
-python3 analysis/hbctl.py dump              # 87 parameters, value + descriptor
-python3 analysis/hbctl.py download /tmp --session   # capture and pull the raw
-python3 analysis/hbctl.py storage           # list the card
+python3 capture/viewer.py                  # controls + ffplay preview, capture, save
+python3 tools/hbctl.py dump              # 87 parameters, value + descriptor
+python3 tools/hbctl.py download /tmp --session   # capture and pull the raw
+python3 tools/hbctl.py storage           # list the card
 ```
 
 Working, verified on hardware (X1D II 50C, firmware 1.5.2):
@@ -68,7 +68,7 @@ were read-only or frames identical to ones Phocus itself sends.
 * All 17 OTA entries extract with valid CRC-32; `system.new.dat` → `system.img`
   (256 MiB ext4) builds cleanly.
 
-Tool: [`cim_unpack.py`](cim_unpack.py) (`info` / `decrypt` / `extract`).
+Tool: [`cim_unpack.py`](../tools/cim_unpack.py) (`info` / `decrypt` / `extract`).
 
 ### 1.2 Platform facts established
 
@@ -96,7 +96,7 @@ camera → host   03 00 05 08 <n> │ <seq u16> <0x80|op> <data>
 * Ops: `1` write · `2` read · `3` write string · `4` indexed · `5` list · `6` describe · `7` data block.
 * Reads return typed ASCII — `i150`, `f<16 hex>` (double bits), `S<len>,<text>`, `r<a,b,c>`.
 * Reads need **no handshake**; the camera answers on a freshly claimed interface.
-* Driver: [`hbctl.py`](hbctl.py). Full detail and the trace: [`PROTOCOL.md`](PROTOCOL.md).
+* Driver: [`hbctl.py`](../tools/hbctl.py). Full detail and the trace: [`PROTOCOL.md`](PROTOCOL.md).
 
 Live parameter map captured on hardware: [`PARAMETERS-LIVE.md`](PARAMETERS-LIVE.md) — 87
 advertised parameters, each with current value and descriptor.
@@ -191,8 +191,8 @@ end to end. What is not:
 
 ```sh
 # unpack the firmware (needs pycryptodome)
-python3 analysis/cim_unpack.py info    X1D_II_50C_v1_5_2.cim
-python3 analysis/cim_unpack.py extract X1D_II_50C_v1_5_2.cim /tmp/fw152
+python3 tools/cim_unpack.py info    X1D_II_50C_v1_5_2.cim
+python3 tools/cim_unpack.py extract X1D_II_50C_v1_5_2.cim /tmp/fw152
 
 # read the ext4 image (needs dissect.extfs)
 python3 -c "from dissect.extfs import ExtFS; fs=ExtFS(open('/tmp/fw152/system.img','rb')); print(fs.get('/').listdir())"
@@ -230,5 +230,5 @@ Scene notes for the Phocus side are in `PROTOCOL.md` §7 (arch offsets, tooling)
 | `trace-phocus-capture.log` | raw libusb trace of connect + one capture |
 | `trace-liveview-2064.log` | raw trace of a live-view session (2756×2064) |
 | `PRORES-FEATURE-NOTE.md` | ProRes design note: contract, gaps, phased plan |
-| `parameter-table.txt` | 170 parameter codes |
+| `parameter_table.txt` | 170 parameter codes |
 | `extracted/hbl-*.sh` | upgrade scripts recovered from 1.5.2 |

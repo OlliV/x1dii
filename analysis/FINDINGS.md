@@ -390,7 +390,7 @@ With the corrected scheme:
 
 * all **17/17** OTA entries extract with valid CRC-32
 * `system.new.dat` (243,724,288 B) → `system.img` (256 MiB ext4) builds cleanly
-* `analysis/cim_unpack.py` reproduces it (`extract` mode)
+* `tools/cim_unpack.py` reproduces it (`extract` mode)
 
 Superseded claims: `§Addendum 2` (dictionary-compressed deflate), the "tampered
 central-directory entry" in `§Addendum 1`, and the unreadable-first-block note in §1.

@@ -1,2 +1,10 @@
+__pycache__/
+*.pyc
+# captures and crash reports are local artefacts, not source
+captures/*
+!captures/.gitkeep
+*.3fr
+crash.txt
+*.h264
+# firmware image is 233 MB; fetch it from the update file, do not version it
 *.cim
-__pycache__

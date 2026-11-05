@@ -13,9 +13,11 @@ bleeding into this one and the result is marked unreliable.
 import sys
 import time
 
-import hbctl
-import liveview_replay as lr
-import liveview_stream as ls
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from lib import hbctl              # noqa: E402
+from lib import liveview as ls     # noqa: E402
+from lib.liveview import load_sequence, drain   # noqa: E402
 
 
 def trial(n, seq, sustain=2.5, label=""):
@@ -36,7 +38,7 @@ def trial(n, seq, sustain=2.5, label=""):
             except Exception:
                 pass
             if op == 7:
-                lr.drain(cam, 200)
+                drain(cam, 200)
 
         buf = b""
         frames = 0
@@ -59,7 +61,7 @@ def trial(n, seq, sustain=2.5, label=""):
 
 
 def main():
-    seq = lr.load_sequence()
+    seq = load_sequence()
     ns = [int(a) for a in sys.argv[1:]] or [181]
     for n in ns:
         if n > len(seq):
