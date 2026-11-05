@@ -34,7 +34,7 @@ Commands
   hbctl.py session                    establish the tether-transfer session
   hbctl.py download [dir] [--session] capture and pull the raw off the camera
   hbctl.py capture [count] [delay]    fire the shutter
-  hbctl.py focus-stack [frames] [step] [init_delay_s] [exp_delay_ms]
+  hbctl.py focus-stack [frames] [step] [init_s] [exp_ms] [dir]
                                       run the camera's focus bracketing
   hbctl.py storage                    list the card
   hbctl.py raw <op> <code> [hex]      arbitrary frame (writes need --write)
@@ -401,7 +401,8 @@ class Camera:
         return n
 
     def focus_bracket(self, frames=3, step=0, initial_delay=None,
-                      exposure_delay=None, timeout=120.0):
+                      exposure_delay=None, direction=0, timeout=90.0, idle=4.0,
+                      progress=None):
         """Run the camera's own focus bracketing and return the files it wrote.
 
         Live view must be OFF: with the preview streaming, a host trigger takes a single
@@ -412,6 +413,9 @@ class Camera:
         `step` is the camera's named scale, 0..4 = ExtraSmall, Small, Medium, Large,
         ExtraLarge (confirmed by changing the menu and watching 0x006a). It is NOT a
         distance: 0x006d, which looks like one (125..16000), does not follow it.
+
+        `direction` is 0x006e, confirmed the same way: 0 = towards infinity,
+        1 = towards near, 2 = symmetric (near and far).
         """
         self.call(OP_CMD, 0x0007, bytes(10), retries=0)     # live view off
         time.sleep(0.6)
@@ -421,6 +425,8 @@ class Camera:
             self.write(0x006c, initial_delay)
         if exposure_delay is not None:                      # 0x006d, milliseconds
             self.write(0x006d, exposure_delay)
+        if direction is not None:                           # 0x006e, 0 inf / 1 near / 2 both
+            self.write(0x006e, direction)
         self.write(0x0041, 5)                               # DriveModeMode = focus bracket
         if self.read(0x0041) != 5:
             raise RuntimeError("camera refused drive mode 5")
@@ -430,8 +436,10 @@ class Camera:
         self.dev.write(EP_OUT, bytes([0x04, 0x00, 0x08, 0x05, len(payload)]) + payload,
                        timeout=self.timeout)
 
-        seen, end = [], time.time() + timeout
+        seen, end, last_new = [], time.time() + timeout, time.time()
         while time.time() < end and len(seen) < frames:
+            if seen and time.time() - last_new > idle:
+                break                     # camera stopped early (lens limit) - don't hang
             try:
                 b = bytes(self.dev.read(EP_IN, 1024, timeout=800))
             except usb.core.USBTimeoutError:
@@ -443,6 +451,12 @@ class Camera:
                 path = p[3:][6:].decode("latin-1", "replace")
                 if path.startswith("/SD1"):        # one event per slot; count the card once
                     seen.append(path)
+                    last_new = time.time()
+                    if progress:
+                        try:
+                            progress(path, len(seen))
+                        except Exception:
+                            pass
                     if len(seen) >= frames:
                         break
         self.write(0x0041, 0)                              # back to single shot
@@ -682,12 +696,14 @@ def main():
             step = int(rest[1]) if len(rest) > 1 else 0
             init_delay = int(rest[2]) if len(rest) > 2 else None      # seconds
             exp_delay = int(rest[3]) if len(rest) > 3 else None       # milliseconds
+            direction = int(rest[4]) if len(rest) > 4 else 0          # 0 inf, 1 near, 2 both
             names = {0: "ExtraSmall", 1: "Small", 2: "Medium", 3: "Large", 4: "ExtraLarge"}
             print("focus bracketing: %d frames, step %s (live view must be off)"
                   % (frames, names.get(step, step)))
             files = cam.focus_bracket(frames=frames, step=step,
                                       initial_delay=init_delay,
-                                      exposure_delay=exp_delay)
+                                      exposure_delay=exp_delay,
+                                      direction=direction)
             print("captured %d/%d frames:" % (len(files), frames))
             for f in files:
                 print("   ", f)

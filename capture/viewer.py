@@ -40,6 +40,11 @@ BTN_BG = "#f0f0f0"
 #   9 = full auto (square), 3 = P, 2 = S, 1 = A, 0 = M, 8 = Mq, 10 = video
 # A C slot reports whatever mode it is programmed to (so a C set to A reads 1), which
 # means the greying rules follow it automatically.
+# focus stack panel: the camera's own named scale, and practical frame counts
+STACK_FRAMES = (2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30)
+STEP_NAMES = ("Extra small", "Small", "Medium", "Large", "Extra large")
+DIR_NAMES = ("Towards infinity", "Towards near", "Symmetric")
+
 MODE_NAMES = {9: "\u25a1", 3: "P", 2: "S", 1: "A", 0: "M", 8: "Mq", 10: "Video"}
 
 # badge tint by mode family: neutral where the camera decides, warmer as you take over
@@ -167,8 +172,7 @@ class App:
                        activebackground="#111", activeforeground="#fff",
                        highlightthickness=0, font=("Helvetica", 11),
                        command=self._toggle_save).pack(anchor="w")
-        tk.Button(save, text="folder…", command=self._pick_dir,
-                  font=("Helvetica", 10), padx=4).pack(anchor="w", pady=(2, 0))
+        self._flat_button(save, "folder…", self._pick_dir).pack(anchor="w", pady=(2, 0))
         self.dir_label = tk.Label(save, bg="#111", fg="#777", font=("Menlo", 9),
                                   text=(os.path.basename(self.download_dir)
                                         if self.download_dir else "(card only)"))
@@ -176,8 +180,52 @@ class App:
 
         # status row: fixed-width message on the left so changing text cannot resize the
         # window, battery indicator pinned right
+        # ---- focus stack panel: collapsed by default, and when open the CAPTURE button
+        # itself runs the stack, so there is one primary action rather than two buttons
+        stack = tk.Frame(root, bg="#1a1a1a")
+        stack.grid(row=1, column=0, sticky="we", padx=8, pady=(0, 8))
+
+        self.stack_on = tk.BooleanVar(value=False)
+        self.stack_toggle = tk.Checkbutton(
+            stack, text="  Focus stack", variable=self.stack_on,
+            command=self._toggle_stack, bg="#1a1a1a", fg="#ccc",
+            selectcolor="#4a4a4a", activebackground="#1a1a1a",
+            activeforeground="#fff", highlightthickness=0,
+            font=("Helvetica", 12, "bold"))
+        self.stack_toggle.pack(side="left", padx=(8, 10), pady=9)
+
+        self.stack_body = tk.Frame(stack, bg="#1a1a1a")
+        self.stack_body.pack(side="left", pady=9)
+
+        self.stack_frames = tk.IntVar(value=3)
+        fr_box = tk.Frame(self.stack_body, bg="#1a1a1a")
+        fr_box.pack(side="left", padx=(0, 10))
+        tk.Label(fr_box, text="frames", bg="#1a1a1a", fg="#888",
+                 font=("Helvetica", 10)).pack(anchor="w")
+        self.om_frames = tk.OptionMenu(fr_box, self.stack_frames, *STACK_FRAMES)
+        self._style_menu(self.om_frames, 5)
+        self.om_frames.pack()
+
+        self.stack_step = tk.StringVar(value=STEP_NAMES[0])
+        st_box = tk.Frame(self.stack_body, bg="#1a1a1a")
+        st_box.pack(side="left", padx=(0, 12))
+        tk.Label(st_box, text="step", bg="#1a1a1a", fg="#888",
+                 font=("Helvetica", 10)).pack(anchor="w")
+        self.om_step = tk.OptionMenu(st_box, self.stack_step, *STEP_NAMES)
+        self._style_menu(self.om_step, 11)
+        self.om_step.pack()
+
+        self.stack_dir = tk.StringVar(value=DIR_NAMES[0])
+        dir_box = tk.Frame(self.stack_body, bg="#1a1a1a")
+        dir_box.pack(side="left", padx=(0, 12))
+        tk.Label(dir_box, text="direction", bg="#1a1a1a", fg="#888",
+                 font=("Helvetica", 10)).pack(anchor="w")
+        self.om_dir = tk.OptionMenu(dir_box, self.stack_dir, *DIR_NAMES)
+        self._style_menu(self.om_dir, 16)
+        self.om_dir.pack()
+
         row = tk.Frame(root, bg="#111")
-        row.grid(row=1, column=0, sticky="we", padx=10, pady=(0, 8))
+        row.grid(row=2, column=0, sticky="we", padx=10, pady=(0, 8))
         row.columnconfigure(0, weight=1)
 
         self.status = tk.Label(row, text="starting...", anchor="w", bg="#111",
@@ -201,7 +249,6 @@ class App:
 
         root.bind("<space>", lambda e: self.on_capture())
         root.bind("<Return>", lambda e: self.on_capture())
-        root.bind("<Enter>", lambda e: root.focus_force())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # ---- video: ffplay owns the picture
@@ -217,6 +264,9 @@ class App:
              "-framedrop", "-autoexit", "-f", "h264",
              "-window_title", "X1D II live view", "-i", "-"],
             stdin=subprocess.PIPE)
+        # the preview is its own process and takes focus when it maps; keep the controls
+        # in front so a click lands on the button instead of only activating the window
+        self.root.after(400, self._raise_controls)
         self._rec = open(record, "wb") if record else None
 
         for fn in (self._reader, self._writer, self._watchdog, self._reconnect,
@@ -247,6 +297,42 @@ class App:
         setattr(self, "var_" + label.lower(), var)
         setattr(self, "om_" + label.lower(), om)
         setattr(self, "vals_" + label.lower(), {})
+
+    def _toggle_stack(self):
+        """Enable the stack controls. Nothing is packed or unpacked and the capture
+        button never changes its label, so the window cannot resize as a side effect."""
+        on = self.stack_on.get()
+        state = "normal" if on else "disabled"
+        for widget in (self.om_frames, self.om_step, self.om_dir):
+            try:
+                widget.configure(state=state)
+            except Exception:
+                pass
+        self._log("focus stack mode -> %s" % on)
+
+    def _flat_button(self, parent, text, command, bg="#2d2d2d"):
+        """A dark button. tk.Button on aqua draws its own light face and ignores bg, so a
+        styled label is the only way to keep the panel's colours consistent."""
+        b = tk.Label(parent, text=text, bg=bg, fg="#ededed",
+                     font=("Helvetica", 10), padx=9, pady=3, cursor="hand2")
+        b.bind("<Button-1>", lambda e: command())
+        b.bind("<Enter>", lambda e: b.configure(bg="#3d3d3d"))
+        b.bind("<Leave>", lambda e: b.configure(bg=bg))
+        return b
+
+    def _raise_controls(self):
+        try:
+            self.root.lift()
+            self.root.focus_force()
+        except Exception:
+            pass
+
+    def _style_menu(self, om, width):
+        om.configure(anchor="w", width=width, highlightthickness=0, bd=1,
+                     relief="raised", bg="#2d2d2d", fg="#eeeeee",
+                     activebackground="#3d3d3d", activeforeground="#ffffff",
+                     font=("Helvetica", 11))
+        om["menu"].configure(bg="#2d2d2d", fg="#eeeeee")
 
     # ---- saving
 
@@ -486,8 +572,11 @@ class App:
     # ---- capture
 
     def on_capture(self):
+        if self.stack_on.get():
+            self.on_stack()          # the panel is open, so CAPTURE means "run the stack"
+            return
         self._log("capture: click received")
-        self.capture_btn.configure(text="●  …", state="disabled")
+        self.capture_btn.configure(state="disabled")
         self.root.update_idletasks()
 
         def run():
@@ -539,7 +628,7 @@ class App:
             except Exception as e:
                 self._log("capture: restart failed %s" % e)
             self.root.after(0, lambda: self.capture_btn.configure(
-                text="●  CAPTURE", state="normal"))
+                state="normal"))
             if token is None:
                 self._say("capture failed - is live view running?")
             elif self._saved_path:
@@ -547,6 +636,66 @@ class App:
             else:
                 self._say("captured (token 0x%04x)" % token)
         threading.Thread(target=run, daemon=True).start()
+
+    def on_stack(self):
+        """Run the camera's focus bracketing. Live view must be off for the sequence."""
+        if self.capturing or self.cam is None or self.disconnected:
+            return
+        if self.session_ok:
+            # in a session the camera hands frames to the host instead of the card, so
+            # bracketing produces nothing and the camera reports a failed transfer
+            self._say("turn off Save a copy and reconnect - tethered stacks go to the host")
+            self._log("stack refused: tether session active")
+            return
+        frames = int(self.stack_frames.get())
+        step = STEP_NAMES.index(self.stack_step.get())
+        self.capturing = True
+        self._log("stack: start %d frames, step %s, %s"
+                  % (frames, self.stack_step.get(), self.stack_dir.get()))
+        self.capture_btn.configure(state="disabled")
+
+        def run():
+            got = []
+            try:
+                self._say("stack: stopping preview\u2026")
+                with self.lock:
+                    self.cam.call(hbctl.OP_CMD, 0x0007, bytes(10), retries=0)
+                self.downloading = True          # the reader must not take 0x84
+                time.sleep(0.6)
+                direction = DIR_NAMES.index(self.stack_dir.get())
+                with self.lock:
+                    got = self.cam.focus_bracket(
+                        frames=frames, step=step, direction=direction,
+                        progress=lambda p, n: self._say("stack %d/%d" % (n, frames)))
+                self._log("stack: %d/%d frames, step %s" % (len(got), frames, self.stack_step.get()))
+                if len(got) >= frames:
+                    self._say("stack: %d frames on card" % len(got))
+                else:
+                    self._say("stack: %d/%d - lens limit reached?" % (len(got), frames))
+            except Exception as e:
+                self._log("stack: EXCEPTION %s: %s" % (type(e).__name__, e))
+                self._say("stack failed - %s" % type(e).__name__)
+            finally:
+                self.downloading = False
+                self.capturing = False
+                self._recover_until = time.time() + 10
+                try:
+                    self._start_live()
+                except Exception as e:
+                    self._log("stack: live restart failed %s" % e)
+                self.root.after(0, lambda: self.capture_btn.configure(state="normal"))
+        threading.Thread(target=run, daemon=True).start()
+        # a wedged camera can block a USB read indefinitely; do not let that hold the UI
+        self.root.after(int((frames * 10 + 45) * 1000), self._stack_watchdog)
+
+    def _stack_watchdog(self):
+        if not self.capturing:
+            return
+        self._log("stack: watchdog - camera stopped answering")
+        self._say("stack timed out - camera stopped responding")
+        self.capturing = False
+        self.downloading = False
+        self.capture_btn.configure(state="normal")
 
     # ---- pipeline
 
