@@ -89,6 +89,10 @@ all been observed:
   clears it. The recurring symptom is `Access denied` when another process — including
   macOS's own driver, after the camera presents a video-style interface — holds the
   interface.
+* **Killing the client mid-session wedges the camera.** A `kill -9` skips the session
+  teardown (`op 3 / 0x007a "I2,0,1"` then `op 1 / 0x0004 / 00 00 01`, which is what Phocus
+  sends on disconnect) and the next connection fails with `Overflow` until the body is
+  power cycled. Close the window, or send SIGTERM, so the teardown runs.
 * **A bracket started too soon after a previous operation is ignored.** Give the camera a
   moment between captures.
 * **A tether session changes where images go.** With `Save a copy` on, the camera sends

@@ -28,6 +28,7 @@ import collections
 import os
 import re
 import struct
+import signal
 import subprocess
 import sys
 import threading
@@ -263,6 +264,14 @@ class App:
         root.bind("<space>", lambda e: self.on_capture())
         root.bind("<Return>", lambda e: self.on_capture())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # a killed client leaves the camera mid-session, and the next connection fails with
+        # an endpoint overflow until the body is power cycled. Close the session on the
+        # signals a supervisor (or a terminal) would normally send.
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, lambda *_: self.root.after(0, self.on_close))
+            except Exception:
+                pass
         # diagnostic: log every click that reaches the app, with the widget it hit, so a
         # dead button can be told apart from a click that never arrived
         # keep the controls above the preview window: ffplay is a separate process and
@@ -799,7 +808,8 @@ class App:
         """
         if len(payload) >= 3 and payload[2] not in self._seen_ops:
             self._seen_ops.add(payload[2])
-            self._log("event opcode 0x%02x: %s" % (payload[2], payload[3:].hex(' ')[:60]))
+            self._log("event opcode 0x%02x len=%d: %s"
+                      % (payload[2], len(payload), payload[3:].hex(' ')))
         if len(payload) >= 3 and payload[2] == 0x45:
             self._log("file event: %s" % payload[3:].hex(' '))
             return

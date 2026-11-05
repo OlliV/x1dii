@@ -388,7 +388,38 @@ speed. These arrive when the body changes a setting itself (metering while shoot
 were being discarded by the same reply-matching code, so a client should treat the whole
 `0x40..0x4f` range as notification traffic, not just `0x40`.
 
-**Open question (2026-11-05):** the event was captured from Phocus, but has not yet been
+**Status 2026-11-05 (evening): still not working, but narrowed.**
+
+What was established:
+
+* A healthy session replay is essentially complete: 181 commands, 1 failure
+  (`describe 0x0009`), 6 seconds.
+* The client *does* receive async notifications - status `0x42`, carrying typed values such
+  as `"?S4,1/13"`. They were being discarded by reply matching (fixed).
+* `0x40` capture events have **never** been observed by our client, with live view on or off.
+* Pressing the cable release while our session is active appears to produce **no
+  photograph at all** (no file written), whereas the same press while Phocus is connected
+  does capture. That is the key symptom: our session state seems to disable the body's own
+  shutter, which would make the missing event a consequence rather than the cause.
+* Killing the client mid-session wedges the camera (`Overflow`); it needs the Phocus
+  teardown (`op 3 / 0x007a "I2,0,1"`, `op 1 / 0x0004 / 00 00 01`) or a power cycle. The app
+  now sends that teardown and handles SIGTERM.
+
+**TetheredMode experiment result (2026-11-05): inconclusive.** All three values
+(`I2,0,1`, `I2,1,1`, `I2,1,0`) were written with a 25 s window each and the cable release
+pressed in every window. No photograph was produced in any of them - but the card listing
+returned 0 files in all three windows, so the measurement itself is unreliable: while a
+session is active `op 7 / 0x0009` appears to return an empty listing, meaning "file count"
+cannot be used as the witness here. A different witness is needed (the `0x45`/`0x40`
+notification, or a card reader after the fact).
+
+**Next experiment (not yet run):** the likely difference is the session's end state, i.e.
+`0x007a TetheredMode`. Our replay writes `I2,1,1` then `I2,1,0`; Phocus's trace also
+contains `I2,0,1`. After the replay, write each value in turn and press the cable release:
+the one that lets the camera take a photograph is the one that also enables the `0x40`
+notification. Test order: `I2,0,1`, then `I2,1,1`, then `I2,1,0`.
+
+**Original open question (2026-11-05):** the event was captured from Phocus, but has not yet been
 observed arriving at our own client. The app parses control packets out of the live view
 stream and handles `0x40`/`0x04` (see `_on_event`), and `0x0033 TetheredCaptureEnabled`
 reads `1` even outside a session. Attempts to reproduce it standalone were inconclusive
