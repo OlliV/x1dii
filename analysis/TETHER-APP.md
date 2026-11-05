@@ -16,7 +16,7 @@ split is deliberate — Tk's photo path is slow enough to make the controls feel
 
 | control | what it does |
 |---|---|
-| `●  CAPTURE` | one shot; runs the bracket instead when Focus stack is ticked |
+| the orange release | one shot; runs the bracket instead when Focus stack is ticked |
 | `Space` / `Return` | same as CAPTURE |
 | Aperture / Shutter / ISO | greyed out according to the camera's mode |
 | `☐ Live view` | switch the preview on or off — see below |
@@ -168,3 +168,10 @@ all been observed:
   stay laid out; resizing on toggle is what made them feel unreliable.
 * Native `tk.Button`/`Checkbutton` on aqua ignore `bg`, which is why the dark buttons are
   styled `tk.Label`s.
+* **The release button is a Canvas, not a Button.** aqua draws even a `tk.Button` as its own
+  rounded rectangle and ignores most styling, so a circle is not possible. The face is a
+  stack of ~22 concentric ovals in `#F57513` — Canvas fills have no alpha, so every shade is
+  pre-blended against the background by `_mix()`. That is what makes it read as a domed
+  button lit from the upper left rather than a flat disc.
+* **Hover and busy states redraw the same geometry** with a lighter or grey base, so the
+  widget never changes size — the old button's text changed and the window moved.

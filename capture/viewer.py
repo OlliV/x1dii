@@ -45,7 +45,7 @@ from lib import liveview as ls     # noqa: E402
 import usb.core                    # noqa: E402  must come after hbctl
 
 QUEUE_MAX = 8
-BTN_BG = "#f0f0f0"
+BTN_ORANGE = "#F57513"        # Hasselblad's release-button orange
 
 # Where captures are kept unless the user picks somewhere else. ~/Pictures is the macOS
 # convention for this, and the folder is created on first run rather than assumed.
@@ -131,6 +131,20 @@ def _same(a, b):
         return str(a) == str(b)
 
 
+def _mix(a, b, t):
+    """Blend two #rrggbb colours by t (0 = a, 1 = b).
+
+    Canvas fills have no alpha, so every shade on the release button has to be worked out
+    against the background instead of being laid on top of it.
+    """
+    a = a.lstrip("#")
+    b = b.lstrip("#")
+    ca = [int(a[i:i + 2], 16) for i in (0, 2, 4)]
+    cb = [int(b[i:i + 2], 16) for i in (0, 2, 4)]
+    return "#%02x%02x%02x" % tuple(
+        max(0, min(255, int(round(x + (y - x) * t)))) for x, y in zip(ca, cb))
+
+
 class App:
     def __init__(self, root, record=None):
         self.root = root
@@ -188,10 +202,7 @@ class App:
         bar = tk.Frame(root, bg="#111")
         bar.grid(row=0, column=0, sticky="we", padx=8, pady=8)
 
-        self.capture_btn = tk.Button(bar, text="●  CAPTURE", command=self.on_capture,
-                                     font=("Helvetica", 14, "bold"), padx=18, pady=8,
-                                     default="active", bg=BTN_BG)
-        self.capture_btn.pack(side="left", padx=(0, 18))
+        self._make_release(bar)
 
         self._make_control(bar, "Aperture", 0x0008, 0x003e)
         self._make_control(bar, "Shutter", 0x0009, 0x003f)
@@ -368,6 +379,97 @@ class App:
         setattr(self, "var_" + label.lower(), var)
         setattr(self, "om_" + label.lower(), om)
         setattr(self, "vals_" + label.lower(), {})
+
+    # ---- the release button
+
+    def _make_release(self, parent):
+        """The release, drawn rather than photographed.
+
+        Modelled on the X release cord: a wide matte grey disc with a thin dark rim, a
+        recessed well, and a small matte orange button sitting down inside it - not a
+        glossy dome. tk.Button cannot be a circle on aqua (it paints its own rounded
+        rectangle and ignores most styling), so this is a Canvas.
+        """
+        box = tk.Frame(parent, bg="#111")
+        box.pack(side="left", padx=(0, 16))
+        self.capture_canvas = tk.Canvas(box, width=70, height=70, bg="#111",
+                                        highlightthickness=0, bd=0, cursor="hand2")
+        self.capture_canvas.pack()
+        self.capture_label = tk.Label(box, text="CAPTURE", bg="#111", fg="#9e9e9e",
+                                      font=("Helvetica", 9, "bold"), cursor="hand2")
+        self.capture_label.pack(pady=(0, 1))
+        for w in (box, self.capture_canvas, self.capture_label):
+            w.bind("<Button-1>", self._release_click)
+            w.bind("<Enter>", lambda e: self._release_hover(True))
+            w.bind("<Leave>", lambda e: self._release_hover(False))
+        self._capture_enabled = True
+        self._release_hovered = False
+        self._draw_release()
+
+    def _release_click(self, _event=None):
+        if not self._capture_enabled:
+            return
+        self.on_capture()
+
+    def _release_hover(self, on):
+        self._release_hovered = on
+        self._draw_release()
+
+    def _set_capture_enabled(self, enabled):
+        """Dim the release while a shot or a stack is running. The geometry never
+        changes, so the window cannot resize - that was what made the old button feel
+        unreliable."""
+        self._capture_enabled = bool(enabled)
+        self._draw_release()
+
+    def _draw_release(self):
+        c = self.capture_canvas
+        c.delete("all")
+        on = getattr(self, "_capture_enabled", True)
+        hot = getattr(self, "_release_hovered", False) and on
+        core = BTN_ORANGE if on else "#6b6b6b"
+        if hot and on:
+            core = _mix(core, "#ffffff", 0.10)
+        cx = cy = 35.0
+        r_out, r_well, r_core = 33.0, 21.5, 17.0
+        # the plate never changes: only the button in the middle does, so "busy" reads as
+        # the one part that is actually working being taken out of play
+        grey_dark = "#767676"
+        grey_lite = "#a8a8a8"
+
+        # thin dark rim, then the wide matte face - a shallow ramp, not a glossy dome
+        c.create_oval(cx - r_out - 1, cy - r_out - 1, cx + r_out + 1, cy + r_out + 1,
+                      fill="#292929", outline="")
+        steps = 26
+        for i in range(steps):
+            t = i / float(steps - 1)
+            r = r_out * (1.0 - t) + 0.8
+            off = 0.9 * (1.0 - (1.0 - t) ** 2)
+            c.create_oval(cx - r - off, cy - r - off, cx + r - off, cy + r - off,
+                          fill=_mix(grey_dark, grey_lite, t ** 0.9), outline="")
+
+        # the recess: dark at the top left where the light does not reach, a lit wall at
+        # the bottom right. This is what says "recessed" rather than "printed on".
+        c.create_oval(cx - r_well, cy - r_well, cx + r_well, cy + r_well,
+                      fill="#191919", outline="")
+        c.create_arc(cx - r_well + 1, cy - r_well + 1, cx + r_well - 1, cy + r_well - 1,
+                     start=95, extent=170, style="arc", outline="#0b0b0b", width=3)
+        c.create_arc(cx - r_well + 1, cy - r_well + 1, cx + r_well - 1, cy + r_well - 1,
+                     start=272, extent=150, style="arc", outline="#484848", width=2)
+
+        # the matte button itself: low contrast, no dimple, a whisper of sheen
+        edge = _mix(core, "#000000", 0.14)
+        lite = _mix(core, "#ffffff", 0.15)
+        for i in range(steps):
+            t = i / float(steps - 1)
+            r = r_core * (1.0 - t) + 0.6
+            off = 1.4 * (1.0 - (1.0 - t) ** 2)
+            c.create_oval(cx - r - off, cy - r - off, cx + r - off, cy + r - off,
+                          fill=_mix(edge, lite, t ** 0.9), outline="")
+
+        self.capture_label.configure(
+            fg=(BTN_ORANGE if (hot and on) else "#9e9e9e" if not on else "#d6d6d6"))
+
 
     def _toggle_stack(self):
         """Enable the stack controls. Nothing is packed or unpacked and the capture
@@ -755,11 +857,13 @@ class App:
     # ---- capture
 
     def on_capture(self):
+        if not getattr(self, "_capture_enabled", True):
+            return                   # a shot or a stack is already running
         if self.stack_on.get():
             self.on_stack()          # the panel is open, so CAPTURE means "run the stack"
             return
         self._log("capture: click received")
-        self.capture_btn.configure(state="disabled")
+        self._set_capture_enabled(False)
         self.root.update_idletasks()
 
         def run():
@@ -811,8 +915,7 @@ class App:
                     self._start_live()
                 except Exception as e:
                     self._log("capture: restart failed %s" % e)
-            self.root.after(0, lambda: self.capture_btn.configure(
-                state="normal"))
+            self.root.after(0, lambda: self._set_capture_enabled(True))
             if token is None:
                 self._say("capture failed - is live view running?")
             elif self._saved_path:
@@ -836,7 +939,7 @@ class App:
         self.capturing = True
         self._log("stack: start %d frames, step %s, %s"
                   % (frames, self.stack_step.get(), self.stack_dir.get()))
-        self.capture_btn.configure(state="disabled")
+        self._set_capture_enabled(False)
 
         def run():
             got = []
@@ -888,7 +991,7 @@ class App:
                         self._start_live()
                     except Exception as e:
                         self._log("stack: live restart failed %s" % e)
-                self.root.after(0, lambda: self.capture_btn.configure(state="normal"))
+                self.root.after(0, lambda: self._set_capture_enabled(True))
         threading.Thread(target=run, daemon=True).start()
         # a wedged camera can block a USB read indefinitely; do not let that hold the UI
         self.root.after(int((frames * 10 + 45) * 1000), self._stack_watchdog)
@@ -900,7 +1003,7 @@ class App:
         self._say("stack timed out - camera stopped responding")
         self.capturing = False
         self.downloading = False
-        self.capture_btn.configure(state="normal")
+        self._set_capture_enabled(True)
 
     # ---- pipeline
 

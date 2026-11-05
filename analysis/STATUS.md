@@ -47,7 +47,8 @@ no signature check. See [`UPGRADE-AND-SIGNING.md`](UPGRADE-AND-SIGNING.md) and t
 [`SIGNING-AUDIT.md`](SIGNING-AUDIT.md).
 
 Still worth doing, all host-side: [`FUTURE-WORK.md`](FUTURE-WORK.md) — focus control is
-the big untouched one.
+the big untouched one, and §6 sketches a tiled review of recent captures (tile the last
+2–4 shots, click one to expand, arrow keys to walk the history).
 
 Environment notes:
 * camera must not be held by Phocus (`claim_interface(3)` fails while it runs);

@@ -204,6 +204,54 @@ state change. Low expected value, low cost.
 
 ---
 
+## 6. Comparing recent shots — tiled review
+
+Asked for after the cable-release workflow settled. Right now a capture replaces the single
+still window, so only the last frame is ever visible and comparing two takes means opening
+files by hand.
+
+**What it should do**
+
+1. **Tile 2–4 consecutive shots side by side** — the last *n* captures laid out in a row, so
+   the differences between takes can be judged at a glance.
+2. **Click a tile to widen it.** Clicking one picture in the tiling blows that one up to fill
+   the window; clicking it again restores the tiled view of the last *n*. So the grid is the
+   resting state and a single picture is a temporary zoom, not a separate window.
+3. **Arrow keys walk the history in single view.** Left/right (or up/down) swap to the
+   previous/next capture while zoomed, without leaving single view.
+
+**What it needs first**
+
+* **A capture history.** The app currently keeps only `_seen_tokens` (a set, for dedupe) and
+  a single overwritten `still.png`. It needs an ordered ring of the last *n* captures, each
+  with its still path and token — a `deque(maxlen=n)` beside the existing bookkeeping.
+* **Previews kept, not overwritten.** Stills should go to
+  `~/Library/Caches/X1D Tether/stills/<token>.png` with the oldest pruned, instead of one
+  fixed filename. Tiles want a smaller render (`sips -Z 900`) so four of them stay cheap;
+  the single view can use the 1800 px version.
+* **Tk image handling.** One `PhotoImage` per visible tile, and a reference kept or Tk drops
+  the pixels — the existing `_still_window` already relies on this. Rebuilding the grid on
+  every capture is fine at 4 tiles; a `Canvas` with image items is easier to re-lay-out than
+  packed labels, and gives free hit-testing for the click-to-zoom.
+
+**Constraints worth remembering**
+
+* **The review only exists when live view is off.** Live view owns the preview area
+  outright, so the tiling, the click-to-widen and the arrow-key history all belong to the
+  cable-release mode. When the preview is streaming nothing is shown but the stream — the
+  same split the app already has, where `Live view` off is the only state that displays a
+  still at all. Concretely: the tiled view is the off-mode counterpart of the preview
+  window, not something layered on top of it.
+* The raw `.3FR` may already be deleted (that is deliberate — see
+  [`TETHER-APP.md`](TETHER-APP.md)), so the gallery must be built from the extracted JPEG,
+  not from re-reading the raw.
+* Captures taken before this feature existed have no cached preview; backfill by extracting
+  from the `.3FR` when `Save a copy` is on, and skip otherwise.
+* Tokens are not guaranteed contiguous (a burst can skip numbers), so ordering must come
+  from arrival order, not from sorting ids.
+
+---
+
 ## Out of reach without a signing bypass
 
 Listed so they are not re-litigated: ProRes (encoder present but unwired, *and* the
