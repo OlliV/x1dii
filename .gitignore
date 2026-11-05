@@ -8,3 +8,4 @@ crash.txt
 *.h264
 # firmware image is 233 MB; fetch it from the update file, do not version it
 *.cim
+dist/

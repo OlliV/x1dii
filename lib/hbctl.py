@@ -215,11 +215,27 @@ def reset_usb():
     raise RuntimeError("reset_usb() is unsafe: it crashes on device finalisation")
 
 
+def _backend():
+    """Use a bundled libusb when the environment names one.
+
+    A .app bundle cannot rely on Homebrew being installed or on /opt/homebrew/lib being
+    in the loader's search path, so the launcher sets HBLIBUSB to the dylib it ships.
+    """
+    path = os.environ.get("HBLIBUSB")
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        import usb.backend.libusb1 as libusb1
+        return libusb1.get_backend(find_library=lambda _name: path)
+    except Exception:
+        return None
+
+
 class Camera:
     def __init__(self, timeout=1500):
         self.timeout = timeout
         self.seq = int(time.time() * 1000) & 0x3FFF
-        self.dev = usb.core.find(idVendor=VID, idProduct=PID)
+        self.dev = usb.core.find(idVendor=VID, idProduct=PID, backend=_backend())
         if self.dev is None:
             raise SystemExit("camera not found (VID %04x PID %04x)" % (VID, PID))
         self.cfg = self.dev.get_active_configuration()

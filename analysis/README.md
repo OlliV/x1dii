@@ -40,6 +40,28 @@ analysis/   documentation and the raw traces it refers to
 
 Run the app with `./run_capture.sh`, or any tool as `python3 tools/<name>.py`.
 
+## macOS app bundle
+
+```bash
+./build_app.sh            # build dist/X1D II Tether.app
+./build_app.sh --open     # build and launch
+```
+
+The bundle carries the Python code and pyusb, plus a copy of libusb, so it does not
+depend on `/tmp/pylibs` or Homebrew's loader paths. `ffplay` is **not** vendored (it drags
+in all of ffmpeg) — the app finds it on `PATH` and says so if it is missing.
+
+Two things that make the bundle work, both learned the hard way:
+
+* **The executable is a compiled universal binary** (`capture/launcher.c`), not a shell
+  script. LaunchServices takes an app's architecture from its executable; a script has
+  none, so the bundle gets launched under Rosetta and the arm64 libusb fails to load with
+  `incompatible architecture`, surfacing as pyusb's `NoBackendError`.
+* **It re-execs itself if translated.** macOS caches a bundle's architecture, so a
+  rebuilt app can still launch as x86_64. The launcher checks
+  `sysctl.proc_translated` and re-execs via `arch -arm64`, since the shipped libusb is
+  arm64-only. The build script also re-registers the bundle with `lsregister`.
+
 ## Quick start
 
 ```bash
