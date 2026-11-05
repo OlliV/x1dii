@@ -49,6 +49,7 @@ import re
 import struct
 import sys
 import time
+import threading
 
 try:
     import usb.core
@@ -237,6 +238,10 @@ class Camera:
     def __init__(self, timeout=1500):
         self.timeout = timeout
         self.seq = int(time.time() * 1000) & 0x3FFF
+        self.on_event = None              # called with async (0x40) payloads
+        self.io_lock = threading.RLock()  # replies and events share endpoint 0x85
+        self.session_started = False
+        self.pkt_stats = {}               # opcode -> count, for diagnosing the channel
         self.dev = usb.core.find(idVendor=VID, idProduct=PID, backend=_backend())
         if self.dev is None:
             raise SystemExit("camera not found (VID %04x PID %04x)" % (VID, PID))
@@ -245,6 +250,9 @@ class Camera:
         usb.util.claim_interface(self.dev, IFACE)
 
     def close(self):
+        if getattr(self, "session_started", False):
+            self.end_session()
+            self.session_started = False
         try:
             usb.util.release_interface(self.dev, IFACE)
         except Exception:
@@ -265,7 +273,8 @@ class Camera:
         end = time.time() + deadline
         while time.time() < end:
             try:
-                data = self.dev.read(EP_IN, 1024, timeout=self.timeout)
+                with self.io_lock:
+                    data = self.dev.read(EP_IN, 1024, timeout=self.timeout)
             except usb.core.USBTimeoutError:
                 return None
             b = bytes(data)
@@ -276,8 +285,16 @@ class Camera:
                 continue
             seq = struct.unpack("<H", payload[:2])[0]
             status = payload[2]
-            if status == 0x40:
-                continue                        # async event, not an answer
+            self.pkt_stats[status] = self.pkt_stats.get(status, 0) + 1
+            if 0x40 <= status <= 0x4f:
+                # an async event, not an answer to this call - hand it on rather than
+                # dropping it, or a capture made with the camera's own shutter is lost
+                if self.on_event:
+                    try:
+                        self.on_event(payload)
+                    except Exception:
+                        pass
+                continue
             if want_seq is not None and seq != want_seq:
                 continue
             return status, payload[3:]
@@ -557,6 +574,20 @@ class Camera:
                     break
         return total
 
+    def end_session(self):
+        """Release a tether session the way Phocus does.
+
+        Phocus sends these two commands on disconnect. Without them the camera is left
+        believing a host is still attached, and the next connection tends to fail with an
+        endpoint overflow that only a power cycle clears.
+        """
+        try:
+            # raw typed payload, exactly as Phocus sends it: "I2,0,1"
+            self.call(OP_WRITE, 0x007a, b"I2,0,1", retries=0)
+            self.call(OP_CMD, 0x0004, b"\x00\x00\x01", retries=0)
+        except Exception:
+            pass
+
     def replay_session(self, verbose=False):
         """Replay Phocus's 181-command connect sequence.
 
@@ -566,15 +597,21 @@ class Camera:
         """
         from . import liveview as lv
         seq = lv.load_sequence()
+        failed = []
         for op, code, val in seq:
             try:
-                self.call(op, code, val, retries=0)
+                if self.call(op, code, val, retries=0) is None:
+                    failed.append((op, code))
             except Exception:
-                pass
+                failed.append((op, code))
             if op == OP_BLOCK:
                 lv.drain(self, 200)
+        if failed:
+            print("session: %d of %d commands got no reply: %s"
+                  % (len(failed), len(seq), failed[:8]))
         if verbose:
             print("session replayed (%d commands)" % len(seq))
+        self.session_started = True
 
     def storage(self, expected=2770004):
         """List the card. The blob arrives on 0x84, possibly in several reads."""

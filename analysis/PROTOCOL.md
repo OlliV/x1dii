@@ -368,6 +368,26 @@ Notes:
   assuming each USB read is a control packet.
 * This requires the tether session, exactly like our own captures.
 
+**Client bug that hid this for hours.** Replies and async events share endpoint `0x85`, and
+a normal command wait reads from it looking for its own sequence number. The original
+implementation discarded anything that was not its reply:
+
+```python
+if status == 0x40:
+    continue        # async event, not an answer  <- silently lost the capture event
+```
+
+Since the app polls parameters continuously, there was almost always a call in flight, so
+every event was thrown away and it looked as though the camera never sent one. A client must
+dispatch `0x40` payloads (and `0x45` file events) rather than dropping them, and should not
+let a reader thread and command replies steal each other's packets from the same endpoint.
+
+**Async notifications exist beyond 0x40/0x45.** The camera also sends status `0x42` frames
+whose payload is a typed value, e.g. `3f 53 34 2c 31 2f 31 33` = `"?S4,1/13"` - a shutter
+speed. These arrive when the body changes a setting itself (metering while shooting). They
+were being discarded by the same reply-matching code, so a client should treat the whole
+`0x40..0x4f` range as notification traffic, not just `0x40`.
+
 **Open question (2026-11-05):** the event was captured from Phocus, but has not yet been
 observed arriving at our own client. The app parses control packets out of the live view
 stream and handles `0x40`/`0x04` (see `_on_event`), and `0x0033 TetheredCaptureEnabled`

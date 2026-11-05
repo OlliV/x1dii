@@ -135,6 +135,7 @@ class App:
         self._synced = False
         self.downloading = False
         self._seen_tokens = set()
+        self._seen_ops = set()
         self._live_refused = False
         self._mode = None
         self._refused_since = 0.0
@@ -296,7 +297,7 @@ class App:
         self._rec = open(record, "wb") if record else None
 
         for fn in (self._reader, self._writer, self._watchdog, self._reconnect,
-                   self._stats):
+                   self._stats, self._poll):
             threading.Thread(target=fn, daemon=True).start()
 
         self._try_connect()
@@ -426,6 +427,7 @@ class App:
             self._log("connect: open failed (%s)" % type(e).__name__)
             self.disconnected = True
             return False
+        cam.on_event = self._on_event        # async events (capture, file written)
         with self.lock:
             old, self.cam = self.cam, cam
         if old is not None:
@@ -765,7 +767,8 @@ class App:
                 time.sleep(0.05)      # a download owns 0x84 while it runs
                 continue
             try:
-                buf += bytes(self.cam.dev.read(hbctl.EP_DATA, 1 << 18, timeout=80))
+                chunk = bytes(self.cam.dev.read(hbctl.EP_DATA, 1 << 18, timeout=80))
+                buf += chunk
             except usb.core.USBTimeoutError:
                 continue
             except Exception as e:
@@ -794,6 +797,14 @@ class App:
         as a u32 - the same token our own captures use, so download() works unchanged.
         Requires the tether session, exactly like a host-triggered capture.
         """
+        if len(payload) >= 3 and payload[2] not in self._seen_ops:
+            self._seen_ops.add(payload[2])
+            self._log("event opcode 0x%02x: %s" % (payload[2], payload[3:].hex(' ')[:60]))
+        if len(payload) >= 3 and payload[2] == 0x45:
+            self._log("file event: %s" % payload[3:].hex(' '))
+            return
+        if len(payload) >= 3 and payload[2] == 0x40:
+            self._log("async event 0x40: %s" % payload[3:].hex(' '))
         if len(payload) < 9 or payload[2] != 0x40:
             return
         body = payload[3:]
@@ -827,6 +838,26 @@ class App:
         finally:
             self.downloading = False
             self._recover_until = time.time() + 8
+
+    def _poll(self):
+        """Keep the camera's session warm the way Phocus does.
+
+        Phocus polls indexed state (op 4) about once a second even when nothing changes.
+        Without this the camera does not push camera-initiated capture events to us, even
+        though it does to Phocus. The replies are empty - it is a keepalive, not a query.
+        """
+        while self.running:
+            time.sleep(0.9)
+            if self.cam is None or self.downloading or self.disconnected:
+                continue
+            try:
+                with self.lock:
+                    self.cam.call(4, 0x0003, b"", retries=0)
+                    self.cam.call(4, 0x0002, b"", retries=0)
+                    for v in (b"\x07\x00\x00\x00", b"\x08\x00\x00\x00"):
+                        self.cam.call(4, 0x0001, v, retries=0)
+            except Exception:
+                pass
 
     def _writer(self):
         while self.running:
@@ -910,6 +941,11 @@ class App:
             else:
                 state = "live"
 
+            if (self.cam is not None
+                    and time.time() - getattr(self, "_last_pkt_log", 0) > 20):
+                self._last_pkt_log = time.time()
+                self._log("packets: %s" % {hex(k): v for k, v in
+                                           getattr(self.cam, "pkt_stats", {}).items()})
             text = "%.1f fps   %s" % (fps, state)
             name = MODE_NAMES.get(mode, "?")
             accent = MODE_ACCENT.get(mode, "#2b2b2b")
