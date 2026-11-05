@@ -388,45 +388,58 @@ speed. These arrive when the body changes a setting itself (metering while shoot
 were being discarded by the same reply-matching code, so a client should treat the whole
 `0x40..0x4f` range as notification traffic, not just `0x40`.
 
-**Status 2026-11-05 (evening): still not working, but narrowed.**
+**Status 2026-11-05 (late): SOLVED - the body shutter is blocked by live view.**
 
-What was established:
+The cause was not the session at all. The camera refuses to fire from its own shutter
+button or cable release **while the live view stream is running**. Stop the stream and the
+shutter comes straight back; start it and the shutter is dead again. Phocus behaves exactly
+the same way, which is why a working Phocus cable-release session contains no
+`op 1 / 0x0007` at all: compare `trace-phocus-cable.log` (cable release, no live view ever
+started, `0x40` arrives) with `trace-liveview-2064.log` (live view session, no capture
+events anywhere in it).
 
-* A healthy session replay is essentially complete: 181 commands, 1 failure
-  (`describe 0x0009`), 6 seconds.
-* The client *does* receive async notifications - status `0x42`, carrying typed values such
-  as `"?S4,1/13"`. They were being discarded by reply matching (fixed).
-* `0x40` capture events have **never** been observed by our client, with live view on or off.
-* Pressing the cable release while our session is active appears to produce **no
-  photograph at all** (no file written), whereas the same press while Phocus is connected
-  does capture. That is the key symptom: our session state seems to disable the body's own
-  shutter, which would make the missing event a consequence rather than the cause.
-* Killing the client mid-session wedges the camera (`Overflow`); it needs the Phocus
-  teardown (`op 3 / 0x007a "I2,0,1"`, `op 1 / 0x0004 / 00 00 01`) or a power cycle. The app
-  now sends that teardown and handles SIGTERM.
+Confirmed sequence, captured with live view off (`analysis/trace-phocus-cable.log`):
 
-**TetheredMode experiment result (2026-11-05): inconclusive.** All three values
-(`I2,0,1`, `I2,1,1`, `I2,1,0`) were written with a 25 s window each and the cable release
-pressed in every window. No photograph was produced in any of them - but the card listing
-returned 0 files in all three windows, so the measurement itself is unreliable: while a
-session is active `op 7 / 0x0009` appears to return an empty listing, meaning "file count"
-cannot be used as the witness here. A different witness is needed (the `0x45`/`0x40`
-notification, or a card reader after the fact).
+```
+0x45  01 00 <dirId u32> "/SD2/DCIM/102HASBL/B0002516.3FR"     file written to the card
+0x45  01 00 <dirId u32> "/SD1/DCIM/102HASBL/B0002516.3FR"     second slot, same frame
+0x40  04 <id u32> 00 6c b2 06 03 "3FR" 00                     image offered to the host
+```
 
-**Next experiment (not yet run):** the likely difference is the session's end state, i.e.
-`0x007a TetheredMode`. Our replay writes `I2,1,1` then `I2,1,0`; Phocus's trace also
-contains `I2,0,1`. After the replay, write each value in turn and press the cable release:
-the one that lets the camera take a photograph is the one that also enables the `0x40`
-notification. Test order: `I2,0,1`, then `I2,1,1`, then `I2,1,0`.
+Then the host pulls it with `op 7 / 0x0004` (`00 00 <id16> 00*10`) exactly as for a
+host-triggered capture, and acknowledges with `op 1 / 0x0009 <id>`. The 112 MB transfer
+completes in about a second over USB 3.
 
-**Original open question (2026-11-05):** the event was captured from Phocus, but has not yet been
-observed arriving at our own client. The app parses control packets out of the live view
-stream and handles `0x40`/`0x04` (see `_on_event`), and `0x0033 TetheredCaptureEnabled`
-reads `1` even outside a session. Attempts to reproduce it standalone were inconclusive
-because the camera stopped streaming live view entirely in that context (it accepted the
-start command with `ack 00` but sent no frames), so the test never had a live session to
-deliver events into. Retest with the app itself, which streams reliably, rather than with
-a standalone probe.
+Two practical consequences for a client:
+
+* `0x45` (file written) arrives **without a session** - it is the body announcing its own
+  card write. It is the reliable "did the shutter fire" witness, and it is what made the
+  earlier experiments look negative: they were watching a storage listing that returns
+  empty while a session is active.
+* `0x40` (image offered) requires the tether session. No session, no transfer - the file
+  stays on the card. So a cable-release client must replay the session *and* keep live
+  view off.
+
+They are not quite as exclusive as they look, but close: if live view has run in the
+session and is then stopped, the shutter works again and `0x40` still arrives, so the host
+side can switch. What must never happen is pressing the shutter *while frames are
+streaming*.
+
+**Historical notes (kept because they explain the dead ends).**
+
+* Our client had never actually received a `0x40` because two separate bugs stacked: async
+  events were dropped by reply matching (fixed), and `replay_session()` read its command
+  list from `analysis/trace-liveview-2064.log`, which is **not in the app bundle** - so the
+  session silently failed and nothing was ever offered. The sequence is now checked in as
+  `lib/session_sequence.json`, and the failure surfaced because a worker thread was dying
+  on a Tk call (`main thread is not in main loop`) before it could log anything.
+* `_ensure_session()` now reports how many replay commands went unanswered instead of
+  claiming success unconditionally. One miss (`describe 0x0009`, which answers in several
+  frames) is normal and is tolerated up to `SESSION_TOLERANCE`.
+* The earlier `TetheredMode` experiment was inconclusive, not negative: it watched a card
+  listing that is empty during a session, so it could not have detected a capture either
+  way. It is superseded by the live view finding above.
+
 
 ## 10. Tooling
 

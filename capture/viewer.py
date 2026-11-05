@@ -8,7 +8,8 @@ buttons feel dead, while ffplay is a native video renderer and stays smooth.
 Because ffplay is a separate process, the control window is forced topmost. Without it the
 preview can sit over the controls and swallow every mouse click, which is indistinguishable
 from an unresponsive UI - the clicks never reach this process at all. If buttons ever seem
-dead, check /tmp/viewer.log for "click ..." lines before changing any widget code.
+dead, check the log (captures/x1d-tether.log from a checkout, ~/Library/Logs/X1D Tether
+otherwise) for "click ..." lines before changing any widget code.
 
 On macOS the window can be visible and topmost yet not actually be the key window; then
 clicks never reach the process. Clicking the title bar fixes it, and _raise_controls() does
@@ -31,6 +32,7 @@ import struct
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tkinter as tk
@@ -44,6 +46,14 @@ import usb.core                    # noqa: E402  must come after hbctl
 
 QUEUE_MAX = 8
 BTN_BG = "#f0f0f0"
+
+# Where captures are kept unless the user picks somewhere else. ~/Pictures is the macOS
+# convention for this, and the folder is created on first run rather than assumed.
+DEFAULT_CAPTURE_DIR = "~/Pictures/X1D Tether"
+
+# how many replay commands may go unanswered before the session counts as failed. The
+# shutter describe alone answers in several frames, so one or two misses are normal.
+SESSION_TOLERANCE = 4
 
 # Exposure mode as reported by 0x0003. The body owns this and the host cannot set it
 # (a write is refused with ack 0x0d), so these are only ever read.
@@ -137,6 +147,7 @@ class App:
         self.downloading = False
         self._seen_tokens = set()
         self._seen_ops = set()
+        self.last_body_file = None
         self._live_refused = False
         self._mode = None
         self._refused_since = 0.0
@@ -156,11 +167,19 @@ class App:
 
         try:
             import json
-            saved = json.load(open(self._cfg)).get("download_dir")
+            cfg = json.load(open(self._cfg))
+            saved = cfg.get("download_dir")
             if saved and os.path.isdir(saved):
                 self.download_dir = saved
+            # live view is off by default: the camera will not fire from its own shutter
+            # while the preview streams, and the cable release is the main workflow here
+            self._live_pref = bool(cfg.get("live_view", False))
+            self._save_pref_on = bool(cfg.get("save_copy", True))
         except Exception:
-            pass
+            self._live_pref = False
+            self._save_pref_on = True
+        if not self.download_dir:
+            self.download_dir = self._default_capture_dir()
 
         # ---- controls
         root.title("X1D II tether")
@@ -180,7 +199,7 @@ class App:
 
         save = tk.Frame(bar, bg="#111")
         save.pack(side="left", padx=(18, 4))
-        self.save_var = tk.BooleanVar(value=False)
+        self.save_var = tk.BooleanVar(value=self._save_pref_on)
         tk.Checkbutton(save, text=" Save a copy", variable=self.save_var,
                        bg="#111", fg="#ccc", selectcolor="#4a4a4a",
                        activebackground="#111", activeforeground="#fff",
@@ -191,6 +210,22 @@ class App:
                                   text=(os.path.basename(self.download_dir)
                                         if self.download_dir else "(card only)"))
         self.dir_label.pack(anchor="w")
+
+        # live view has to be a switch, not a nicety: while the preview streams the body
+        # refuses to fire from its own shutter, and stopping the stream does not bring it
+        # back - only a session that never started live view behaves. So the two modes are
+        # exclusive, and the hint says which one is armed.
+        view = tk.Frame(bar, bg="#111")
+        view.pack(side="left", padx=(18, 4))
+        self.live_var = tk.BooleanVar(value=self._live_pref)
+        tk.Checkbutton(view, text=" Live view", variable=self.live_var,
+                       bg="#111", fg="#ccc", selectcolor="#4a4a4a",
+                       activebackground="#111", activeforeground="#fff",
+                       highlightthickness=0, font=("Helvetica", 11),
+                       command=self._toggle_live).pack(anchor="w")
+        self.live_hint = tk.Label(view, bg="#111", fg="#777", font=("Menlo", 9),
+                                  text=self._live_hint_text(), anchor="w", width=22)
+        self.live_hint.pack(anchor="w", pady=(2, 0))
 
         # status row: fixed-width message on the left so changing text cannot resize the
         # window, battery indicator pinned right
@@ -382,46 +417,139 @@ class App:
 
     # ---- saving
 
+    def _default_capture_dir(self):
+        """~/Pictures/X1D Tether, created if it is not there yet.
+
+        Falls back to the home directory and then to None, so a read-only or missing
+        ~/Pictures cannot stop the app from starting.
+        """
+        path = os.path.expanduser(DEFAULT_CAPTURE_DIR)
+        for candidate in (path, os.path.expanduser("~")):
+            try:
+                os.makedirs(candidate, exist_ok=True)
+                return candidate
+            except Exception:
+                continue
+        return None
+
     def _pick_dir(self):
         from tkinter import filedialog
-        d = filedialog.askdirectory(title="Where should captures be saved?")
+        d = filedialog.askdirectory(title="Where should captures be saved?",
+                                    initialdir=self.download_dir or os.path.expanduser("~"))
         self.root.lift()
         self.root.focus_force()          # a modal dialogue leaves focus behind
         if d:
             self.download_dir = d
             self.dir_label.configure(text=os.path.basename(d) or d)
             self._log("save dir = %s" % d)
-            try:
-                import json
-                json.dump({"download_dir": d}, open(self._cfg, "w"))
-            except Exception:
-                pass
+            self._save_pref()
             if self.save_var.get():
                 threading.Thread(target=self._ensure_session, daemon=True).start()
 
     def _toggle_save(self):
         on = self.save_var.get()
         self._log("save a copy -> %s" % on)
+        self._save_pref()
         if on:
             if not self.download_dir:
                 self.dir_label.configure(text="(no folder chosen)")
                 self._say("no folder chosen - pick one with folder…")
             threading.Thread(target=self._ensure_session, daemon=True).start()
 
+    # ---- live view / cable release
+
+    def _live_hint_text(self):
+        return "cable release armed" if not self._live_pref else "body shutter blocked"
+
+    def _save_pref(self):
+        """Persist the three choices that survive a restart."""
+        try:
+            import json
+            cfg = {}
+            try:
+                cfg = json.load(open(self._cfg))
+            except Exception:
+                pass
+            cfg["live_view"] = bool(self.live_var.get())
+            cfg["save_copy"] = bool(self.save_var.get())
+            if self.download_dir:
+                cfg["download_dir"] = self.download_dir
+            json.dump(cfg, open(self._cfg, "w"))
+        except Exception:
+            pass
+
+    def _toggle_live(self):
+        """Swap between previewing and arming the cable release.
+
+        While the preview streams the body ignores its own shutter button and the cable
+        release; stopping the stream brings it straight back, so this is a switch rather
+        than a reconnect. Captures still need a tether session to be offered to the host,
+        so turning the preview off makes sure one exists.
+        """
+        on = self.live_var.get()
+        self._live_pref = bool(on)
+        self._save_pref()
+        self.live_hint.configure(text=self._live_hint_text())
+        self._log("live view -> %s" % on)
+        if on:
+            try:
+                self._start_live()
+            except Exception as e:
+                self._log("live view on failed: %s" % e)
+            self._say("live view on - the body shutter cannot fire while streaming")
+        else:
+            try:
+                self._stop_live()
+            except Exception as e:
+                self._log("live view off failed: %s" % e)
+            if not self.session_ok:
+                threading.Thread(target=self._ensure_session, daemon=True).start()
+            else:
+                self._say("live view off - press the cable release on the camera")
+
+    def _stop_live(self):
+        """Stop the preview stream and stand the watchdog down for this mode."""
+        with self.lock:
+            self.cam.stop_live()
+        self._live_refused = False
+        self._refused_since = 0.0
+        self._epoch += 1                 # reader drops its half-parsed buffer
+        self._log("live view stopped")
+
     def _ensure_session(self):
+        """Replay the tether session if one is not established yet.
+
+        Everything except the replay itself is inside the try: this runs on a worker
+        thread, and an exception escaping it is invisible - which is exactly how a
+        missing session file went unnoticed and left the app silently unable to transfer
+        anything the body shot.
+        """
         if self.session_ok or self.cam is None:
             return
-        self._say("establishing tether session (about 40 s, one time) ...")
+        self.downloading = True              # the replay reads 0x84: reader stand down
         try:
+            self._say("establishing tether session ...")
             with self.lock:
-                self.cam.replay_session()
+                failed = self.cam.replay_session(live=self._live_pref) or []
                 self.cam.flush_stream(2.0)
-            self.session_ok = True
-            self._log("session established")
-            self._say("session ready - captures will be saved and kept on the card")
+            # a couple of describes legitimately answer in several frames and land
+            # outside the reply window; only a broadly silent replay means no session
+            self.session_ok = len(failed) <= SESSION_TOLERANCE
+            self._log("session established (live=%s), %d of %d commands unanswered"
+                      % (self._live_pref, len(failed),
+                         getattr(self.cam, "last_session_sent", 0)))
+            if not self.session_ok:
+                self._say("session incomplete (%d commands) - capture may not transfer"
+                          % len(failed))
+            elif self._live_pref:
+                self._say("session ready - captures will be saved and kept on the card")
+            else:
+                self._say("session ready - press the cable release on the camera")
         except Exception as e:
             self._log("session failed: %s" % e)
             self._say("session failed: %s" % e)
+        finally:
+            self.downloading = False
 
     # ---- connection
 
@@ -448,15 +576,23 @@ class App:
         self._synced = False
         self.session_ok = False
         self._last_frame_time = time.time()
-        try:
-            self._start_live()
-        except Exception as e:
-            self._log("connect: live view failed (%s)" % type(e).__name__)
-            self.disconnected = True
-            return False
+        if self._live_pref:
+            try:
+                self._start_live()
+            except Exception as e:
+                self._log("connect: live view failed (%s)" % type(e).__name__)
+                self.disconnected = True
+                return False
+            self._log("connect: live view started")
+        else:
+            # no preview: the point of this mode is that the body shutter still works, so
+            # the tether session is what we need instead. Start it only once the event
+            # loop is running - Tk cannot be touched from a worker before mainloop().
+            self._log("connect: live view off, establishing cable-release session")
+            self.root.after(600, lambda: threading.Thread(
+                target=self._ensure_session, daemon=True).start())
         self.disconnected = False
         self._recover_until = time.time() + 3
-        self._log("connect: live view started")
         return True
 
     def _reconnect(self):
@@ -670,10 +806,11 @@ class App:
                     self._log("capture: download failed %s" % e)
             self._recover_until = time.time() + 8
             time.sleep(1.2)
-            try:
-                self._start_live()
-            except Exception as e:
-                self._log("capture: restart failed %s" % e)
+            if self._live_pref:
+                try:
+                    self._start_live()
+                except Exception as e:
+                    self._log("capture: restart failed %s" % e)
             self.root.after(0, lambda: self.capture_btn.configure(
                 state="normal"))
             if token is None:
@@ -744,10 +881,13 @@ class App:
                 self.downloading = False
                 self.capturing = False
                 self._recover_until = time.time() + 10
-                try:
-                    self._start_live()
-                except Exception as e:
-                    self._log("stack: live restart failed %s" % e)
+                # a stack runs with live view off; only restore the preview if that is
+                # the mode the user actually wants
+                if self._live_pref:
+                    try:
+                        self._start_live()
+                    except Exception as e:
+                        self._log("stack: live restart failed %s" % e)
                 self.root.after(0, lambda: self.capture_btn.configure(state="normal"))
         threading.Thread(target=run, daemon=True).start()
         # a wedged camera can block a USB read indefinitely; do not let that hold the UI
@@ -802,52 +942,164 @@ class App:
     def _on_event(self, payload):
         """React to a capture made with the camera's own shutter or cable release.
 
-        The body announces it as an async event: 0x40, sub-type 0x04, then the capture id
-        as a u32 - the same token our own captures use, so download() works unchanged.
-        Requires the tether session, exactly like a host-triggered capture.
+        The body announces it two ways, and both show up in practice:
+
+          0x45  <01 00> <dirId u32> "<path>"   the file the body just wrote to the card
+          0x40  04 <id u32> ... "3FR"          the image offered to the host for transfer
+
+        Only the 0x40 id can be handed to download(); 0x45 is the useful part for naming
+        and for telling "the shutter fired" apart from "the host is asleep". Both are
+        pushed only while a tether session is active, so the session must be established
+        even when nothing is being saved.
         """
-        if len(payload) >= 3 and payload[2] not in self._seen_ops:
-            self._seen_ops.add(payload[2])
-            self._log("event opcode 0x%02x len=%d: %s"
-                      % (payload[2], len(payload), payload[3:].hex(' ')))
-        if len(payload) >= 3 and payload[2] == 0x45:
-            self._log("file event: %s" % payload[3:].hex(' '))
+        if len(payload) < 3:
             return
-        if len(payload) >= 3 and payload[2] == 0x40:
-            self._log("async event 0x40: %s" % payload[3:].hex(' '))
-        if len(payload) < 9 or payload[2] != 0x40:
-            return
+        op = payload[2]
         body = payload[3:]
-        if body[0] != 0x04 or len(body) < 5:
+        if op not in self._seen_ops:
+            self._seen_ops.add(op)
+            self._log("event opcode 0x%02x len=%d: %s" % (op, len(payload), body.hex(' ')))
+
+        if op == 0x45:
+            text = body.decode("latin-1", "replace")
+            m = re.search(r"(/DCIM/\S+\.\w+)$", text)
+            self.last_body_file = m.group(1) if m else None
+            self._log("file event: %s (dir id %s)"
+                      % (text, body[2:6].hex(' ') if len(body) >= 6 else "-"))
+            return
+
+        if op != 0x40 or len(body) < 5 or body[0] != 0x04:
             return
         token = int.from_bytes(body[1:5], "little")
+        self._log("capture offered: id=0x%04x" % token)
         if token in self._seen_tokens:
             return
         self._seen_tokens.add(token)
-        self._log("camera capture event: id=0x%04x" % token)
-        if self.save_var.get() and self.session_ok and self.download_dir:
-            self._say("camera shot 0x%04x - downloading" % token)
-            threading.Thread(target=self._fetch_external, args=(token,),
-                             daemon=True).start()
-        else:
-            self._say("camera took a shot (id 0x%04x)" % token)
+        threading.Thread(target=self._fetch_external, args=(token,),
+                         daemon=True).start()
+
+    def _cache_dir(self):
+        """Working files go to a throwaway directory, never a bare name in /tmp.
+
+        A transfer is over 100 MB and the embedded JPEG another 45 MB, so where this
+        lands matters. ~/Library/Caches is the macOS location for data that may be
+        deleted at any time, which is exactly what these are.
+        """
+        cached = getattr(self, "_cache_path", None)
+        if cached:
+            return cached
+        for d in (os.path.expanduser("~/Library/Caches/X1D Tether"),
+                  os.path.expanduser("~/Library/Logs/X1D Tether"),
+                  tempfile.gettempdir()):
+            try:
+                os.makedirs(d, exist_ok=True)
+                self._cache_path = d
+                return d
+            except Exception:
+                continue
+        self._cache_path = tempfile.gettempdir()
+        return self._cache_path
 
     def _fetch_external(self, token):
-        dest = os.path.join(self.download_dir, "capture_%04x.3fr" % token)
+        """Pull a body-triggered capture to the host and show it.
+
+        With Save a copy off the transfer is only needed to make the still, so the raw
+        file is deleted once the JPEG is out of it - otherwise every shot would leave
+        another 100 MB behind for a picture the card already holds.
+        """
+        saving = bool(self.save_var.get() and self.download_dir)
+        if saving:
+            dest = os.path.join(self.download_dir, "capture_%04x.3fr" % token)
+        else:
+            dest = os.path.join(self._cache_dir(), "capture_%04x.3fr" % token)
+        self._say("camera shot 0x%04x - downloading ..." % token)
         try:
             self.downloading = True          # the reader must release 0x84
             time.sleep(0.4)
             with self.lock:
                 n = self.cam.download(token, dest)
-            self._log("external capture saved %s (%d bytes, expected %r)"
+            self._log("external capture %s (%d bytes, expected %r)"
                       % (dest, n, getattr(self.cam, "last_download_expected", None)))
-            self._say("saved %s" % os.path.basename(dest))
+            if not n:
+                self._say("camera shot 0x%04x - transfer refused" % token)
+                return
+            self._show_still(dest)
+            if saving:
+                self._say("saved %s" % os.path.basename(dest))
+            else:
+                self._say("camera shot 0x%04x (card only)" % token)
+                try:
+                    os.remove(dest)          # the still is already extracted
+                except Exception:
+                    pass
         except Exception as e:
             self._log("external capture failed %s" % e)
-            self._say("camera shot download failed")
+            self._say("camera shot download failed - %s" % type(e).__name__)
         finally:
             self.downloading = False
             self._recover_until = time.time() + 8
+
+    def _show_still(self, raw_path):
+        """Put the captured frame in the preview window.
+
+        ffplay is already the preview, so the still is handed to it the same way - the
+        embedded JPEG is pulled out of the 3FR, converted to PNG for Tk, and shown in a
+        window of its own. The live H.264 player is left alone so toggling live view back
+        on needs no restart.
+        """
+        try:
+            data = open(raw_path, "rb").read(48 << 20)
+        except Exception as e:
+            self._log("still: cannot read %s (%s)" % (raw_path, e))
+            return
+        i = data.find(b"\xff\xd8\xff")
+        j = data.rfind(b"\xff\xd9")
+        if i < 0 or j <= i:
+            self._log("still: no embedded JPEG in %s" % raw_path)
+            return
+        cache = self._cache_dir()
+        jpg = os.path.join(cache, "still.jpg")
+        png = os.path.join(cache, "still.png")
+        try:
+            with open(jpg, "wb") as fh:
+                fh.write(data[i:j + 2])
+            subprocess.run(["sips", "-s", "format", "png", "-Z", "1800", jpg,
+                            "--out", png],
+                           check=False, capture_output=True, timeout=20)
+            os.remove(jpg)               # 45 MB, needed only for the conversion
+        except Exception as e:
+            self._log("still: conversion failed %s" % e)
+            return
+        self._log("still: %d bytes of JPEG -> %s" % (j - i + 2, png))
+        self.root.after(0, lambda: self._still_window(png))
+
+    def _still_window(self, png):
+        try:
+            img = tk.PhotoImage(file=png)
+        except Exception as e:
+            self._log("still: Tk cannot load %s (%s)" % (png, e))
+            return
+        win = getattr(self, "_still_win", None)
+        try:
+            if win is not None and win.winfo_exists():
+                win.configure()
+                win.children["img"].configure(image=img)
+                win.image = img
+                win.lift()
+                return
+        except Exception:
+            pass
+        win = tk.Toplevel(self.root)
+        win.title("X1D II capture")
+        win.configure(bg="#000")
+        lab = tk.Label(win, image=img, bg="#000", name="img")
+        lab.pack()
+        win.image = img                     # keep a reference or Tk drops the pixels
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
+        self._still_win = win
 
     def _poll(self):
         """Keep the camera's session warm the way Phocus does.
@@ -893,6 +1145,8 @@ class App:
             time.sleep(3)
             if not self.running or self.capturing or self.disconnected:
                 continue
+            if not self._live_pref:
+                continue          # no preview is the point in cable-release mode
             if time.time() < self._recover_until:
                 continue
             if time.time() - self._last_frame_time < 8:
@@ -932,6 +1186,13 @@ class App:
             fps = sum(1 for t in self.times if t >= cutoff) / 2.0
             if self.disconnected:
                 state = "camera disconnected - waiting"
+            elif not self._live_pref:
+                # no preview is deliberate here: the body shutter only works in a
+                # session that never started live view
+                if self.session_ok:
+                    state = "cable release armed - press the body shutter"
+                else:
+                    state = "arming cable release (session) ..."
             elif self._live_refused:
                 held = time.time() - self._refused_since if self._refused_since else 0.0
                 if mode == 8:
@@ -956,7 +1217,7 @@ class App:
                 self._last_pkt_log = time.time()
                 self._log("packets: %s" % {hex(k): v for k, v in
                                            getattr(self.cam, "pkt_stats", {}).items()})
-            text = "%.1f fps   %s" % (fps, state)
+            text = state if not self._live_pref else "%.1f fps   %s" % (fps, state)
             name = MODE_NAMES.get(mode, "?")
             accent = MODE_ACCENT.get(mode, "#2b2b2b")
             self.root.after(0, lambda t=text: self.status.configure(text=t))
@@ -966,19 +1227,38 @@ class App:
                       % (fps, self._frames_seen, self.drops, state, mode))
 
     def _say(self, text):
-        self.root.after(0, lambda: self.status.configure(text=text))
+        """Update the status line from any thread.
+
+        Tk raises "main thread is not in main loop" if this is called before mainloop()
+        is running, which happens for anything started during __init__. That exception
+        used to escape a worker thread and kill it with no trace, so it is swallowed
+        here: a status line is never worth losing a session over.
+        """
+        try:
+            self.root.after(0, lambda: self.status.configure(text=text))
+        except Exception:
+            pass
 
     def _make_log_path(self):
         """Where to write the event log.
 
-        /tmp/viewer.log was too generic - anything else on the machine could collide with
-        it. The captures folder is preferred so the log sits next to what it describes,
-        then ~/Library/Logs, then /tmp.
+        Two rules, both learned by looking at where it actually ended up:
+
+        * never inside the app bundle. `here` resolves to Contents/Resources/app when
+          frozen, so the old first choice dropped the log into the .app itself - which
+          pollutes the signed bundle and disappears on every rebuild.
+        * never a bare guess in /tmp unless nothing else works.
+
+        Running from a checkout keeps the log next to the captures it describes; the
+        packaged app uses ~/Library/Logs, which is where macOS expects it.
         """
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for d in (os.path.join(here, "captures"),
-                  os.path.expanduser("~/Library/Logs/X1D Tether"),
-                  "/tmp"):
+        candidates = []
+        if os.path.isdir(os.path.join(here, "analysis")):
+            candidates.append(os.path.join(here, "captures"))      # a checkout, not a bundle
+        candidates.append(os.path.expanduser("~/Library/Logs/X1D Tether"))
+        candidates.append(tempfile.gettempdir())
+        for d in candidates:
             try:
                 os.makedirs(d, exist_ok=True)
                 path = os.path.join(d, "x1d-tether.log")
@@ -987,7 +1267,7 @@ class App:
                 return path
             except Exception:
                 continue
-        return "/tmp/x1d-tether.log"
+        return os.path.join(tempfile.gettempdir(), "x1d-tether.log")
 
     def _log(self, msg):
         try:

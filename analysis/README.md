@@ -15,11 +15,18 @@ command is one the camera's own software issues.
 |---|---|---|
 | Live view | `viewer.py`, `liveapp.py` | 2756×2064 H.264, ~11 fps; video in its own ffplay window |
 | Capture | `viewer.py`, `hbctl.py capture` | trigger + token handshake; file lands on the card |
+| Cable release / body shutter | `viewer.py` | the camera's own shutter fires the shot and the app pulls it. Live view must be off — see below |
 | Exposure control | `viewer.py` | aperture / shutter / ISO, read back to confirm |
 | All parameters | `hbctl.py` | read, write, describe; 87 advertised |
 | Card listing | `hbctl.py storage` | both slots, no mass-storage volume needed |
 | Reconnection | `viewer.py` | survives unplug/replug and camera reboots |
 | Raw download | `hbctl.py download --session` | full 50 MP `.3FR` over USB, no card reader |
+
+**The cable release is the surprise:** the camera will not fire from its own shutter button
+or the cable **while the live view stream is running** — no photograph is taken at all, it
+is not a missed event. Phocus behaves identically. So the tether app treats preview and
+cable release as two modes rather than something you get at once; see
+[`TETHER-APP.md`](TETHER-APP.md).
 
 ## Layout
 

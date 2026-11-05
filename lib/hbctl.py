@@ -55,7 +55,11 @@ try:
     import usb.core
     import usb.util
 except ImportError:
-    sys.path.insert(0, "/tmp/pylibs")
+    # developer convenience only: pyusb installed outside site-packages. The app bundle
+    # vendors it, so this is never reached in the packaged build.
+    _dev = "/tmp/pylibs"
+    if os.path.isdir(_dev):
+        sys.path.insert(0, _dev)
     import usb.core
     import usb.util
 
@@ -588,17 +592,30 @@ class Camera:
         except Exception:
             pass
 
-    def replay_session(self, verbose=False):
-        """Replay Phocus's 181-command connect sequence.
+    def replay_session(self, verbose=False, live=True):
+        """Replay Phocus's connect sequence.
 
         This is what makes captures offer themselves to the host (a 0x40 token event)
         instead of only being written to the card. Once per connection is enough -
         subsequent captures keep offering tokens.
+
+        `live=False` omits the single command that starts live view. That matters: while
+        the preview streams, the camera refuses to fire from its own shutter button or
+        cable release, and it does not recover when the stream is merely stopped - live
+        view has to stay off. A working cable-release Phocus session contains no
+        op 1 / 0x0007 at all, which is the same rule seen from the other side.
+
+        Returns the commands that got no reply, so a caller can tell a real session from
+        a silent one.
         """
         from . import liveview as lv
         seq = lv.load_sequence()
         failed = []
+        sent = 0
         for op, code, val in seq:
+            if not live and op == OP_CMD and code == 0x0007:
+                continue                    # leave live view off: the shutter needs it
+            sent += 1
             try:
                 if self.call(op, code, val, retries=0) is None:
                     failed.append((op, code))
@@ -608,10 +625,22 @@ class Camera:
                 lv.drain(self, 200)
         if failed:
             print("session: %d of %d commands got no reply: %s"
-                  % (len(failed), len(seq), failed[:8]))
+                  % (len(failed), sent, failed[:8]))
         if verbose:
-            print("session replayed (%d commands)" % len(seq))
+            print("session replayed (%d of %d commands, live=%s)"
+                  % (sent - len(failed), sent, live))
         self.session_started = True
+        self.last_session_sent = sent
+        return failed
+
+    def stop_live(self):
+        """Stop the preview stream.
+
+        Note that stopping is not the same as never having started it: the body shutter
+        is released again as soon as the stream stops, but a capture will only be offered
+        to the host while the tether session is still active.
+        """
+        return self.call(OP_CMD, 0x0007, bytes(10), retries=0)
 
     def storage(self, expected=2770004):
         """List the card. The blob arrives on 0x84, possibly in several reads."""

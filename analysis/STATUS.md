@@ -18,6 +18,8 @@ Working, verified on hardware (X1D II 50C, firmware 1.5.2):
 
 * live view — 2756×2064 H.264, ~11 fps, started by one command
 * capture — to card, and optionally downloaded as the full 50 MP `.3FR` (`8272 × 6200`)
+* **camera-initiated capture** — the body shutter and cable release, transferred to the
+  Mac and shown, with live view off (the camera refuses to fire while it streams)
 * exposure control — aperture / shutter / ISO, each verified by read-back
 * card listing on both slots, without the mass-storage volume
 * reconnection across unplug and camera reboot
@@ -28,9 +30,12 @@ Things that cost the most to learn, in order:
    `r` values are rationals, `hi << 16 | lo`.
 2. **Live view is one command** and the channel interleaves 1 KB control packets
    (`w = h = 0`) that corrupt a naive parser.
-3. **Download needs a tether-transfer session** — the 181-command connect replay. Outside
+3. **The body shutter is dead while live view streams** — not a lost event, no photograph
+   is taken. This is a camera behaviour and Phocus has it too, which is why a working
+   Phocus cable-release session never starts live view.
+4. **Download needs a tether-transfer session** — the 181-command connect replay. Outside
    it the camera writes to the card and answers `ack 8`.
-4. **Many failures are the body protecting itself** — screen off, a menu open, or the
+5. **Many failures are the body protecting itself** — screen off, a menu open, or the
    sensor too hot. All three look identical as `ack 09` and none is readable: `0x000b`
    (temperature) is not implemented.
 

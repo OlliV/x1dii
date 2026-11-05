@@ -18,11 +18,23 @@ from . import hbctl
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TRACE = os.path.join(ROOT, "analysis", "trace-liveview-2064.log")
+# The parsed command list, checked in so the app bundle does not have to carry a 2 MB
+# trace file. The trace is the source of truth; session_sequence.json is derived from it.
+SEQUENCE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "session_sequence.json")
 FIRST_LIVE = 1793860712.8            # timestamp of the first LIVE frame in the trace
 
 
 def load_sequence(path=None):
-    """The commands Phocus sends before live view starts, as (op, code, value)."""
+    """The commands Phocus sends before live view starts, as (op, code, value).
+
+    Reads the checked-in JSON when present so the app bundle works without the trace,
+    and falls back to decoding the trace when run from a checkout that has it.
+    """
+    if path is None and os.path.exists(SEQUENCE):
+        import json
+        with open(SEQUENCE) as fh:
+            return [(op, code, bytes.fromhex(val)) for op, code, val in json.load(fh)]
     path = path or TRACE
     seq = []
     for line in open(path, errors="replace"):

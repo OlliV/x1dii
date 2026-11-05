@@ -73,8 +73,17 @@ int main(int argc, char **argv)
     setenv("PATH",
            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", 1);
 
-    /* a Finder launch has nowhere to print, so keep a log for diagnosis */
-    (void)freopen("/tmp/x1d-tether.err", "a", stderr);
+    /* A Finder launch has nowhere to print, so keep a log for diagnosis. Put it beside
+     * the app's own log in ~/Library/Logs instead of dropping a file in /tmp, which is
+     * shared, unowned and swept at boot. */
+    const char *home = getenv("HOME");
+    if (home) {
+        char dir[PATH_MAX], log[PATH_MAX];
+        snprintf(dir, sizeof dir, "%s/Library/Logs/X1D Tether", home);
+        (void)mkdir(dir, 0755);
+        snprintf(log, sizeof log, "%s/x1d-tether.err", dir);
+        (void)freopen(log, "a", stderr);
+    }
 
     int translated = is_translated();
     if (translated) {

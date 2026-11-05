@@ -19,6 +19,7 @@ split is deliberate — Tk's photo path is slow enough to make the controls feel
 | `●  CAPTURE` | one shot; runs the bracket instead when Focus stack is ticked |
 | `Space` / `Return` | same as CAPTURE |
 | Aperture / Shutter / ISO | greyed out according to the camera's mode |
+| `☐ Live view` | switch the preview on or off — see below |
 | `☐ Focus stack` | enables the bracket controls |
 | frames / step / direction | 2–1000 · Extra small…Extra large · infinity / near / symmetric |
 | `☑ Save a copy` | also pull the full-res `.3FR` to the chosen folder |
@@ -26,6 +27,60 @@ split is deliberate — Tk's photo path is slow enough to make the controls feel
 Exposure controls follow the dial: in **S** the aperture is greyed, in **A** the shutter is,
 in **P** and full-auto both are, and M / Mq / video allow both. `Mq` has no live view by
 design and the app says so rather than claiming a fault.
+
+---
+
+## Live view vs the cable release
+
+**The camera will not fire from its own shutter button or cable release while the live view
+stream is running.** Not "the event is missed" — no photograph is taken and nothing is
+written to the card. This is a camera behaviour, not a bug in the app: Phocus is the same.
+
+So the app has two modes, and `Live view` picks between them:
+
+| Live view | shutter button / cable | preview | what happens on a press |
+|---|---|---|---|
+| on | dead | streaming | nothing at all |
+| off | **works** | last captured still | the shot transfers and is shown |
+
+The status line and the small hint under the checkbox always say which mode is armed:
+`cable release armed - press the body shutter` or `body shutter blocked`.
+
+Live view is **off by default**, because the cable release is the main workflow; the choice
+is remembered in `~/.x1d_viewer.json`. Turning it on starts the stream immediately, and
+turning it back off stops the stream, which restores the shutter within a fraction of a
+second.
+
+A body-triggered capture arrives as two async notifications:
+
+* `0x45` — the body wrote the file to the card (sent even with no session)
+* `0x40` — the body is offering that image to the host (needs the tether session)
+
+The app reacts to `0x40`: it pulls the file with `op 7 / 0x0004`, extracts the embedded
+JPEG, and shows it in a window of its own, so the still appears where the preview was. If
+`Save a copy` is ticked the `.3FR` also lands in the chosen folder; otherwise the transfer
+goes to `~/Library/Caches/X1D Tether/` and the 100 MB raw file is **deleted** as soon as
+the still has been extracted from it, because the card already holds the original. The card
+always keeps the original.
+
+### Where the app writes
+
+Nothing goes to `/tmp`, and nothing goes inside the app bundle:
+
+| file | location | size |
+|---|---|---|
+| event log | `~/Library/Logs/X1D Tether/x1d-tether.log` | small |
+| launcher stderr | `~/Library/Logs/X1D Tether/x1d-tether.err` | small |
+| still shown in the window | `~/Library/Caches/X1D Tether/still.png` | ~4 MB, overwritten |
+| unsaved `.3FR` in transit | `~/Library/Caches/X1D Tether/` | ~100 MB, deleted after use |
+| `Save a copy` `.3FR` | the folder you chose | ~100 MB, kept |
+
+Running from a checkout puts the log in `captures/` instead, so it sits next to the files it
+describes — but only from a checkout; the packaged app never writes into `Contents/Resources`.
+
+There is no session without live view in Phocus, which is why a working Phocus
+cable-release trace contains no `op 1 / 0x0007` at all — the app gets the same effect by
+replaying the session with that one command omitted (`replay_session(live=False)`).
 
 ---
 
@@ -107,7 +162,7 @@ all been observed:
   sit over the controls and swallow every click.
 * **A window can look active without being key.** macOS then delivers no clicks at all;
   clicking the title bar fixes it, and `_raise_controls()` does the same automatically.
-* **If buttons seem dead, check `/tmp/viewer.log` for `click …` lines first.** No line means
+* **If buttons seem dead, check the app log for `click …` lines first.** No line means
   the click never reached the process, and no widget change will help.
 * **Nothing resizes the window.** The capture button keeps one label and the stack controls
   stay laid out; resizing on toggle is what made them feel unreliable.
