@@ -38,7 +38,7 @@ capture/    the interactive apps
 analysis/   documentation and the raw traces it refers to
 ```
 
-Run the app with `./run.sh`, or any tool as `python3 tools/<name>.py`.
+Run the app with `./run_capture.sh`, or any tool as `python3 tools/<name>.py`.
 
 ## Quick start
 

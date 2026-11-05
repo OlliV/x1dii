@@ -23,7 +23,6 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -34,6 +33,27 @@ import usb.core                    # noqa: E402  must come after hbctl
 
 QUEUE_MAX = 8
 BTN_BG = "#f0f0f0"
+
+# Exposure mode as reported by 0x0003. The body owns this and the host cannot set it
+# (a write is refused with ack 0x0d), so these are only ever read.
+# Mapped from the dial by observation - see analysis/README.md:
+#   9 = full auto (square), 3 = P, 2 = S, 1 = A, 0 = M, 8 = Mq, 10 = video
+# A C slot reports whatever mode it is programmed to (so a C set to A reads 1), which
+# means the greying rules follow it automatically.
+MODE_NAMES = {9: "\u25a1", 3: "P", 2: "S", 1: "A", 0: "M", 8: "Mq", 10: "Video"}
+
+# which controls the mode lets you set: (aperture, shutter).
+# C1-C3 are user-programmable, so they stay permissive - whatever they are set to
+# reports that mode's own number anyway, so the value still drives the rule.
+MODE_ALLOWS = {
+    9:  (False, False),   # full auto - camera chooses both
+    3:  (False, False),   # P - program, both shift together
+    2:  (False, True),    # S - shutter only
+    1:  (True, False),    # A - aperture only
+    0:  (True, True),     # M
+    8:  (True, True),     # Mq - M without live view
+    10: (True, True),     # video - exposure is lens/menu dependent, stay permissive
+}
 
 
 def descriptor_list(desc):
@@ -93,6 +113,7 @@ class App:
         self._epoch = 0
         self._synced = False
         self._live_refused = False
+        self._mode = None
         self._refused_since = 0.0
         self._recover_until = 0.0
         self.capturing = False
@@ -156,9 +177,17 @@ class App:
         root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # ---- video: ffplay owns the picture
+        # a killed process leaves ffplay holding the last frame; sweep those first
+        try:
+            subprocess.run(["pkill", "-f", "ffplay.*X1D II live view"],
+                           check=False, timeout=5)
+            time.sleep(0.3)
+        except Exception:
+            pass
         self.player = subprocess.Popen(
             ["ffplay", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
-             "-framedrop", "-f", "h264", "-window_title", "X1D II live view", "-i", "-"],
+             "-framedrop", "-autoexit", "-f", "h264",
+             "-window_title", "X1D II live view", "-i", "-"],
             stdin=subprocess.PIPE)
         self._rec = open(record, "wb") if record else None
 
@@ -168,7 +197,6 @@ class App:
 
         self._try_connect()
         self._load_controls()
-        self.root.after(300, self._watch_combos)
 
     # ---- ui helpers
 
@@ -177,11 +205,19 @@ class App:
         box.pack(side="left", padx=6)
         tk.Label(box, text=label, bg="#111", fg="#888",
                  font=("Helvetica", 10)).pack(anchor="w")
-        cb = ttk.Combobox(box, width=11, state="readonly")
-        cb.pack()
-        cb.bind("<<ComboboxSelected>>", lambda e, c=code, l=label: self._set_param(c, l))
-        cb.bind("<Return>", lambda e, c=code, l=label: self._set_param(c, l))
-        setattr(self, "cb_" + label.lower(), cb)
+        # tk.OptionMenu rather than ttk.Combobox: the aqua combobox defers its
+        # <<ComboboxSelected>> event until focus moves or Return is pressed, so picking
+        # a value appeared to do nothing. A menubutton's command fires on the click.
+        var = tk.StringVar(value="")
+        om = tk.OptionMenu(box, var, "",
+                           command=lambda _v, c=code, l=label: self._set_param(c, l))
+        om.configure(anchor="w", width=12, highlightthickness=0, bd=1, relief="raised",
+                     bg="#2d2d2d", fg="#eeeeee", activebackground="#3d3d3d",
+                     activeforeground="#ffffff", font=("Helvetica", 11))
+        om["menu"].configure(bg="#2d2d2d", fg="#eeeeee")
+        om.pack()
+        setattr(self, "var_" + label.lower(), var)
+        setattr(self, "om_" + label.lower(), om)
         setattr(self, "vals_" + label.lower(), {})
 
     # ---- saving
@@ -303,7 +339,6 @@ class App:
                     cur = self.cam.read(code)
                 except Exception:
                     continue
-                cb = getattr(self, "cb_" + label.lower())
                 values, order = {}, []
                 if label == "ISO":
                     m = re.match(r"^LF\d+,(.*)$", desc or "")
@@ -333,47 +368,60 @@ class App:
                     else:
                         order = list(vals)
                         values = {v: v for v in vals}
-                cb["values"] = order
+                om = getattr(self, "om_" + label.lower())
+                var = getattr(self, "var_" + label.lower())
+                menu = om["menu"]
+                menu.delete(0, "end")
+                for choice in order:
+                    menu.add_command(label=choice,
+                                     command=lambda v=choice, l=label: self._choose(l, v))
                 setattr(self, "vals_" + label.lower(), values)
                 if order:
                     match = [k for k, v in values.items() if _same(v, cur)]
-                    cb.set(match[0] if match else order[0])
-                    cb.configure(state="readonly")
+                    var.set(match[0] if match else order[0])
+                    om.configure(state="normal")
                 else:
-                    cb.set("n/a")
-                    cb.configure(state="disabled")
-                self._applied[label] = cb.get()
+                    var.set("n/a")
+                    om.configure(state="disabled")
+                self._applied[label] = var.get()
                 self._log("%s: %d choices current=%r" % (label, len(order), cur))
 
-    def _watch_combos(self):
-        """Apply a dropdown change as soon as it happens.
+    def _apply_mode_state(self, mode, aperture, shutter):
+        """Grey out whatever the current exposure mode does not allow.
 
-        ttk's aqua theme does not reliably emit <<ComboboxSelected>> on a click - it
-        fires on focus-out or Return instead, which is why selecting a value appeared to
-        do nothing until Enter was pressed. Polling the widget's own value sidesteps the
-        missing event entirely.
+        The mode cannot be set over USB (the write is refused with ack 0x0d) - the body
+        owns it - so this only mirrors what the camera reports.
         """
-        if not self.running:
+        allow_ap, allow_sh = MODE_ALLOWS.get(mode, (True, True))
+        # belt and braces: an inapplicable control also reads the 7fffffff sentinel
+        allow_ap = allow_ap and aperture is not None and str(aperture) != "7fffffff"
+        allow_sh = allow_sh and shutter is not None and str(shutter) != "7fffffff"
+        self._set_enabled("Aperture", allow_ap)
+        self._set_enabled("Shutter", allow_sh)
+
+    def _set_enabled(self, label, enabled):
+        om = getattr(self, "om_" + label.lower())
+        cur = str(om.cget("state"))
+        if enabled and cur in ("normal", "active"):
+            return                      # 'active' means the pointer is over it
+        if not enabled and cur == "disabled":
             return
-        for label, code in self._combo_code.items():
-            cb = getattr(self, "cb_" + label.lower())
-            values = getattr(self, "vals_" + label.lower())
-            text = cb.get()
-            if not text or text not in values:
-                continue
-            if self._applied.get(label) == text:
-                continue
-            self._applied[label] = text
-            self._set_param(code, label)
-        self.root.after(300, self._watch_combos)
+        om.configure(state="normal" if enabled else "disabled")
+        self._log("%s %s" % (label, "enabled" if enabled else "greyed out"))
+
+    def _choose(self, label, value):
+        """OptionMenu callback: set the displayed value, then apply it."""
+        self._log("choose %s = %r" % (label, value))
+        getattr(self, "var_" + label.lower()).set(value)
+        self._set_param(self._combo_code[label], label)
 
     def _set_param(self, code, label):
-        cb = getattr(self, "cb_" + label.lower())
         values = getattr(self, "vals_" + label.lower())
-        text = cb.get()
+        text = getattr(self, "var_" + label.lower()).get()
         if text not in values:
             return
         raw = values[text]
+        self._log("apply %s = %r (%r)" % (label, text, raw))
         self._applied[label] = text
         self._say("%s: setting %s ..." % (label, text))
 
@@ -508,6 +556,8 @@ class App:
                 continue
             if time.time() - self._last_frame_time < 8:
                 continue
+            if self._mode in (8, 10):
+                continue          # Mq and video have no preview to restart
             self._log("watchdog: no frames for >8s, restarting live view")
             try:
                 r = self._start_live()
@@ -522,33 +572,50 @@ class App:
     def _stats(self):
         while self.running:
             time.sleep(2)
+            # read the camera first: the state text depends on the exposure mode
+            batt = ap = sh = mode = None
+            try:
+                if self.cam is not None:
+                    with self.lock:
+                        batt = self.cam.read(0x002f)
+                        ap = self.cam.read(0x0008)
+                        sh = self.cam.read(0x0009)
+                        mode = self.cam.read(0x0003)
+                        self._mode = mode
+                    self.root.after(0, lambda m=mode, a=ap, s=sh:
+                                    self._apply_mode_state(m, a, s))
+            except Exception as e:
+                self._mark_lost("stats: %s" % type(e).__name__)
+
             cutoff = time.time() - 2.0
             fps = sum(1 for t in self.times if t >= cutoff) / 2.0
             if self.disconnected:
                 state = "camera disconnected - waiting"
             elif self._live_refused:
                 held = time.time() - self._refused_since if self._refused_since else 0.0
-                state = (("refused for %ds - likely too hot, let it cool" % int(held))
-                         if held > 20 else
-                         "refused live view - wake the screen / exit menus")
+                if mode == 8:
+                    state = "Mq - no live view by design"
+                elif mode == 10:
+                    # video mode does not tether a preview at all - Phocus cannot either
+                    state = "video mode - no tether preview"
+                elif held > 20:
+                    state = "refused for %ds - likely too hot, let it cool" % int(held)
+                else:
+                    state = "refused live view - wake the screen / exit menus"
             elif time.time() < self._recover_until:
                 state = "recovering (camera writing)"
             elif time.time() - self._last_frame_time > 6:
-                state = "no preview - check the camera body"
+                state = ("no preview - Mq has no live view by design"
+                         if mode == 8 else "no preview - check the camera body")
             else:
                 state = "live"
-            batt = None
-            try:
-                if self.cam is not None:
-                    with self.lock:
-                        batt = self.cam.read(0x002f)
-            except Exception as e:
-                self._mark_lost("stats: %s" % type(e).__name__)
-            text = "%.1f fps   %s   drops=%d   battery=%s%%" % (
-                fps, state, self.drops, batt if batt is not None else "?")
+
+            text = "%.1f fps   %s   mode=%s   battery=%s%%" % (
+                fps, state, MODE_NAMES.get(mode, "?"),
+                batt if batt is not None else "?")
             self.root.after(0, lambda t=text: self.status.configure(text=t))
-            self._log("fps=%.1f frames=%d drops=%d state=%s"
-                      % (fps, self._frames_seen, self.drops, state))
+            self._log("fps=%.1f frames=%d drops=%d state=%s mode=%r"
+                      % (fps, self._frames_seen, self.drops, state, mode))
 
     def _say(self, text):
         self.root.after(0, lambda: self.status.configure(text=text))
