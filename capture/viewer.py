@@ -134,6 +134,7 @@ class App:
         self._epoch = 0
         self._synced = False
         self.downloading = False
+        self._seen_tokens = set()
         self._live_refused = False
         self._mode = None
         self._refused_since = 0.0
@@ -147,7 +148,8 @@ class App:
         self._combo_code = {"Aperture": 0x0008, "Shutter": 0x0009, "ISO": 0x000a}
         self._applied = {}
         self._cfg = os.path.expanduser("~/.x1d_viewer.json")
-        self._logf = open("/tmp/viewer.log", "a", buffering=1)
+        self._log_path = self._make_log_path()
+        self._logf = open(self._log_path, "a", buffering=1)
         self._log("--- viewer start ---")
 
         try:
@@ -770,7 +772,9 @@ class App:
                 self._mark_lost("reader: %s" % type(e).__name__)
                 time.sleep(0.5)
                 continue
-            frames, buf = ls.frames_from(buf)      # drops control packets
+            frames, events, buf = ls.stream_parse(buf)
+            for payload in events:
+                self._on_event(payload)
             for frame in frames:
                 plen = int.from_bytes(frame[12:16], "little")
                 payload = frame[24:24 + plen]
@@ -782,6 +786,47 @@ class App:
                     if len(self.payloads) == self.payloads.maxlen:
                         self.drops += 1
                     self.payloads.append(payload)
+
+    def _on_event(self, payload):
+        """React to a capture made with the camera's own shutter or cable release.
+
+        The body announces it as an async event: 0x40, sub-type 0x04, then the capture id
+        as a u32 - the same token our own captures use, so download() works unchanged.
+        Requires the tether session, exactly like a host-triggered capture.
+        """
+        if len(payload) < 9 or payload[2] != 0x40:
+            return
+        body = payload[3:]
+        if body[0] != 0x04 or len(body) < 5:
+            return
+        token = int.from_bytes(body[1:5], "little")
+        if token in self._seen_tokens:
+            return
+        self._seen_tokens.add(token)
+        self._log("camera capture event: id=0x%04x" % token)
+        if self.save_var.get() and self.session_ok and self.download_dir:
+            self._say("camera shot 0x%04x - downloading" % token)
+            threading.Thread(target=self._fetch_external, args=(token,),
+                             daemon=True).start()
+        else:
+            self._say("camera took a shot (id 0x%04x)" % token)
+
+    def _fetch_external(self, token):
+        dest = os.path.join(self.download_dir, "capture_%04x.3fr" % token)
+        try:
+            self.downloading = True          # the reader must release 0x84
+            time.sleep(0.4)
+            with self.lock:
+                n = self.cam.download(token, dest)
+            self._log("external capture saved %s (%d bytes, expected %r)"
+                      % (dest, n, getattr(self.cam, "last_download_expected", None)))
+            self._say("saved %s" % os.path.basename(dest))
+        except Exception as e:
+            self._log("external capture failed %s" % e)
+            self._say("camera shot download failed")
+        finally:
+            self.downloading = False
+            self._recover_until = time.time() + 8
 
     def _writer(self):
         while self.running:
@@ -876,6 +921,27 @@ class App:
 
     def _say(self, text):
         self.root.after(0, lambda: self.status.configure(text=text))
+
+    def _make_log_path(self):
+        """Where to write the event log.
+
+        /tmp/viewer.log was too generic - anything else on the machine could collide with
+        it. The captures folder is preferred so the log sits next to what it describes,
+        then ~/Library/Logs, then /tmp.
+        """
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for d in (os.path.join(here, "captures"),
+                  os.path.expanduser("~/Library/Logs/X1D Tether"),
+                  "/tmp"):
+            try:
+                os.makedirs(d, exist_ok=True)
+                path = os.path.join(d, "x1d-tether.log")
+                with open(path, "a"):
+                    pass
+                return path
+            except Exception:
+                continue
+        return "/tmp/x1d-tether.log"
 
     def _log(self, msg):
         try:

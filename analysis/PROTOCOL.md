@@ -338,6 +338,45 @@ this as `tiff_extent()` plus resync in `download()`; the viewer pauses its reade
 Observed sizes on an X1D II 50C: raw SubIFD is 8384x6304 uncompressed 16-bit, the 3FR is
 about 107 MB, and the embedded 4136x3100 JPEG preview sits just after the header.
 
+## 9g. Camera-initiated capture (shutter button / cable release)
+
+Captured from a Phocus trace: pressing the body's shutter while tethered makes the camera
+announce the shot itself. This is how a tether app reacts to the physical button.
+
+```
+camera -> host   op 0x40 (async)   04 <id u32 LE> 00 <3 bytes> <S3 "3FR">
+host -> camera   op 7   kind 0x0004   value: 00 00 <id lo> <id hi> + 10 zero bytes
+host -> camera   op 1   code 0x0009   value: <id u32 LE>          (acknowledge / consume)
+```
+
+Observed, three shots taken with the shutter button and the cable release:
+
+| event payload | id | fetched with |
+|---|---|---|
+| `04 43 1e 00 00 00 a8 5f 06 03 33 46 52 00` | `0x1e43` | `op 7 / 0x0004 / 0000 431e …` |
+| `04 03 1f 00 00 00 6a b6 06 03 33 46 52 00` | `0x1f03` | `op 7 / 0x0004 / 0000 031f …` |
+| `04 04 1f 00 00 00 50 b6 06 03 33 46 52 00` | `0x1f04` | `op 7 / 0x0004 / 0000 041f …` |
+
+Notes:
+
+* The id is the **same token** our own captures use, so `download(token, path)` works
+  unchanged on a camera-initiated shot.
+* The trailing `03 33 46 52 00` is a length-prefixed `"3FR"` — the file format, so other
+  formats presumably appear here too.
+* Phocus is streaming live view while this happens; the event arrives interleaved with
+  video frames, so a reader must parse control packets out of the stream rather than
+  assuming each USB read is a control packet.
+* This requires the tether session, exactly like our own captures.
+
+**Open question (2026-11-05):** the event was captured from Phocus, but has not yet been
+observed arriving at our own client. The app parses control packets out of the live view
+stream and handles `0x40`/`0x04` (see `_on_event`), and `0x0033 TetheredCaptureEnabled`
+reads `1` even outside a session. Attempts to reproduce it standalone were inconclusive
+because the camera stopped streaming live view entirely in that context (it accepted the
+start command with `ack 00` but sent no frames), so the test never had a live session to
+deliver events into. Retest with the app itself, which streams reliably, rather than with
+a standalone probe.
+
 ## 10. Tooling
 
 ```bash

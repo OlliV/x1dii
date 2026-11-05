@@ -48,6 +48,40 @@ def drain(cam, ms=200):
             break
 
 
+def stream_parse(buf):
+    """Split the channel into video frames and control packets.
+
+    Returns (frames, events, remainder). One endpoint carries both: large H.264 frames
+    beginning "LIVE", and control packets `03 00 05 08 <len> <payload>`. Parsing them
+    together matters because a camera-initiated capture arrives as a control packet
+    interleaved with video - a reader that only looks for "LIVE" discards it.
+    """
+    frames, events = [], []
+    while buf:
+        if buf.startswith(b"\x03\x00\x05\x08"):
+            if len(buf) < 5:
+                break
+            n = buf[4]
+            if len(buf) < 5 + n:
+                break
+            events.append(buf[5:5 + n])
+            buf = buf[5 + n:]
+        elif buf.startswith(b"LIVE"):
+            if len(buf) < 24:
+                break
+            plen = int.from_bytes(buf[12:16], "little")
+            if plen <= 0 or plen > (1 << 22):
+                buf = buf[4:]
+                continue
+            if len(buf) < 24 + plen:
+                break
+            frames.append(buf[:24 + plen])
+            buf = buf[24 + plen:]
+        else:
+            buf = buf[1:]                 # resync to the next packet boundary
+    return frames, events, buf
+
+
 def frames_from(buf):
     """Pull every complete video frame out of a byte buffer.
 
