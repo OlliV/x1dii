@@ -135,10 +135,20 @@ Reads return ASCII with a one-letter type tag:
 | `i` | `i<decimal>` | `i150` |
 | `f` | `f<16 hex digits>` — IEEE-754 double bit pattern | `f4059000000000000` = 100.0 |
 | `S` | `S<len>,<text>` | `S17,/SD1/SD2:/SD1/SD2` |
-| `r` | `r<a,b,c>` | `r0,0,0` |
+| `r` | `r<n>` — a packed rational: `numerator << 16 | denominator` | `r1007d` = 1/125 |
 
 The float tag is worth noting: the hex is the double's bit pattern, so `f4059…` decodes to
 100.0 — ISO and EV values arrive as doubles.
+
+The `r` tag is a rational, not a struct: `value = (numerator << 16) | denominator`. The
+aperture table proves it — `40001` is 4/1, `30000a` is 48/10, `5f000a` is 95/10, `160001`
+is 22/1, matching the names `4, 4.8, 9.5, 22`. Shutter speeds work the same way
+(`1/125` = `r1007d`, `1.4` = `re000a`, `45` = `r2d0001`), which means a client can
+construct valid values from the human-readable `ShutterName` table without needing the
+camera to publish the parallel value list.
+
+`0x7fffffff` is the "not applicable" sentinel — it is what `Shutter` reads while the body
+is in aperture-priority, where the shutter is chosen by the camera.
 
 ---
 

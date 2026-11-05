@@ -141,6 +141,22 @@ def encode_typed(tag, value):
 
 # ---------------------------------------------------------------- transport
 
+def reset_usb():
+    """Drop pyusb's cached libusb context.
+
+    pyusb keeps one backend/context for the process lifetime. After the camera drops
+    off the bus and re-enumerates, that context goes stale and find() keeps returning
+    nothing even though the OS lists the device. Clearing it forces a fresh library
+    load and a fresh context, which is what makes reconnection actually work.
+    """
+    try:
+        import usb.backend.libusb1 as libusb1
+        libusb1._lib_object = None
+        libusb1._lib = None
+    except Exception:
+        pass
+
+
 class Camera:
     def __init__(self, timeout=1500):
         self.timeout = timeout

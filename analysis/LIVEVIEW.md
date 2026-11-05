@@ -3,7 +3,8 @@
 The X1D II streams a live preview over USB that any host can consume. This is how it
 works and how to drive it, recovered by tracing Phocus and then reproduced without it.
 
-Working viewer: [`liveapp.py`](liveapp.py).
+Applications: [`viewer.py`](viewer.py) is the full tethering window (preview, capture,
+exposure controls); [`liveapp.py`](liveapp.py) is the minimal preview-only version.
 
 ---
 
@@ -45,6 +46,19 @@ The payload opens with a small sub-header containing the ASCII string `H264` at 
 
 The sub-header is harmless — ffmpeg skips it and decodes cleanly. 137/137 frames decoded
 in testing with no errors.
+
+**The channel also carries control packets.** A 1 KB packet with the same `LIVE` magic but
+`width = height = 0` is interleaved with the video frames:
+
+```
+total= 65320  payload=65296  w=2756 h=2064   <- video frame
+total=  1048  payload= 1024  w=0    h=0      <- control packet
+```
+
+Feeding these to a decoder corrupts it (`pps_id out of range`) and they contain no SPS, so
+a client that waits for SPS silently starves. **Skip any frame with `width == 0` or
+`height == 0`.** This one filter was the difference between a stable preview and one that
+stalled or glitched every few seconds.
 
 Frame sizes vary with scene complexity: ~20 KB for a flat/black frame, ~80 KB typical,
 ~500 KB for a detailed one.
@@ -125,6 +139,30 @@ ffmpeg -i /tmp/preview.h264 -vf "select=eq(n\,60)" -frames:v 1 frame.png
 ```
 
 ---
+
+## 5b. Preview quality is fixed — it cannot be raised
+
+The preview is visibly blocky when still and smears badly under motion. That is the
+camera's encoder, not the transport: ~80 KB per 2756×2064 frame at ~11 fps is roughly
+**7 Mbit/s**, which is low for 5.7 megapixels.
+
+Two plausible levers were tried and neither moves it:
+
+| attempt | result |
+|---|---|
+| `0x0047` (range 2000–10000, reads 5000 — looked like a bitrate) | write accepted, frame size unchanged: 82309 → 82386 bytes |
+| `0x0051` LiveVideoMode, all 14 values | ack `0x0d`, resolution and frame size unchanged |
+
+So the preview quality is a firmware constant. Nothing host-side can improve it, and
+Phocus shows the same stream. In dim scenes the body also slows its preview exposure,
+which adds real motion blur on top of the compression.
+
+### Parsing, in one place
+
+`liveview_stream.frames_from(buf)` is the canonical frame extractor: it resynchronises on
+the `LIVE` magic, rejects implausible lengths, and **drops the control packets**. Both
+`viewer.py` and `liveapp.py` use it, so there is no second copy to drift out of sync — an
+earlier duplicate in `viewer.py` did not filter them and reproduced the stall.
 
 ## 6. Rough edges
 

@@ -4,37 +4,37 @@
 
 ## 0. Resume here
 
-**The protocol is solved and there is a working toolkit.** `analysis/hbctl.py` talks to the
-camera with Phocus closed — reads, writes (verified by read-back), descriptors, snapshots
-and storage listing. Usage: [`HBCTL.md`](HBCTL.md).
+**Start with [`README.md`](README.md)** — it is the index: what works, how to run it, and
+the negative results.
+
+The camera is fully driveable from a host with no Phocus and no SDK:
 
 ```bash
-python3 analysis/hbctl.py list          # 87 advertised parameters
-python3 analysis/hbctl.py dump          # every parameter: live value + descriptor
-python3 analysis/hbctl.py read FirmwareVersion SerialString Battery
-python3 analysis/hbctl.py write Iso 400 # writes, then reads back to prove it stuck
+python3 analysis/viewer.py                  # tethering window: preview, capture, exposure
+python3 analysis/hbctl.py dump              # 87 parameters, value + descriptor
+python3 analysis/hbctl.py write Iso 400     # writes, then verifies by read-back
+python3 analysis/hbctl.py capture 10 5      # intervalometer
+python3 analysis/hbctl.py storage           # list the card
 ```
 
-Verified on hardware: `FirmwareVersion 1.5.2`, `SerialString VQ20200944`, `Battery 95`,
-integer and double writes round-tripping, 87-parameter dump, card listing.
+Verified on hardware: firmware `1.5.2`, serial `VQ20200944`, integer and double writes
+round-tripping, capture committing files to the card, live view at 2756×2064 H.264.
 
-The single most useful thing learned late: **values are typed ASCII in both directions, and
-writes reuse the read format** — a write is `op 3` carrying `"I1,400"`, exactly the shape
-the camera reads back. Write acks are `0` when accepted and non-zero when not, and
-`hbctl write` checks the read-back rather than trusting the ack.
+The two things that took longest to get right, and are worth knowing before touching this:
 
-There is also a working **live view window** — [`liveapp.py`](liveapp.py), no Phocus:
+1. **Values are typed ASCII in both directions** and writes reuse the read format — a write
+   is `op 3` carrying `"I1,400"`. `r` values are rationals, `hi << 16 | lo`.
+2. **Live view is one command** (`op 1` / `0x0007` / first byte `0x0c`) and the channel
+   interleaves 1 KB control packets that a naive parser feeds to the decoder, which is what
+   makes it look like the stream is broken.
 
-```bash
-python3 analysis/liveapp.py --seconds 60     # 2756x2064 H.264 preview, ~11 fps, instant start
-```
-
-Video resolution turned out to be a dead end (§1.5) — it isn't on the wire at all. What is
-left is file download (§1.7). Details: [`LIVEVIEW.md`](LIVEVIEW.md).
+Open: file download over USB (§1.7). Everything else is done or ruled out.
 
 Environment notes:
 * camera must not be held by Phocus (`claim_interface(3)` fails while it runs);
 * `libusb-package` + `pyusb` are installed under `/tmp/pylibs` (may be gone after reboot);
+* pyusb caches one libusb context per process — `hbctl.reset_usb()` drops it, which is what
+  makes reconnection work after the camera re-enumerates;
 * all firmware extraction artefacts are reproduced by `cim_unpack.py`;
 * the old "Phocus x86_64 offsets" note is obsolete — the protocol was recovered by
   capturing real traffic, see `PROTOCOL.md` §0 and §12.
@@ -216,6 +216,7 @@ Scene notes for the Phocus side are in `PROTOCOL.md` §7 (arch offsets, tooling)
 | `hbctl.py` | the driver itself (read / write / describe / dump / watch / storage) |
 | `PARAMETERS-LIVE.md` | every parameter with its live value and descriptor |
 | `LIVEVIEW.md` | live view protocol, framing and viewer |
+| `viewer.py` | tethering window: preview + capture + exposure controls |
 | `liveapp.py`, `liveview_stream.py`, `liveview_replay.py` | live view: viewer, streaming, connect replay |
 | `usbshim.c` | LibUsb replacement used to capture Phocus's traffic |
 | `parse_trace.py`, `watch_events.py` | decode a trace; list async events |

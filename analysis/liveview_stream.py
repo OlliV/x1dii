@@ -16,21 +16,37 @@ import liveview_replay as lr
 
 
 def frames_from(buf):
-    """Yield complete LIVE frames from a byte buffer; returns the remainder."""
+    """Pull every complete video frame out of a byte buffer.
+
+    Returns (frames, remainder). Two things this must do, both learned the hard way:
+
+    * the channel interleaves 1 KB control packets carrying the same `LIVE` magic but
+      width = height = 0; feeding those to a decoder corrupts it, so they are dropped
+      here rather than by every caller
+    * a bogus length would otherwise make us wait forever for bytes that never come
+
+    This is the single canonical parser; viewer.py and liveapp.py both use it.
+    """
     out = []
     while True:
         i = buf.find(b"LIVE")
         if i < 0:
             return out, b""
-        buf = buf[i:]
+        if i:
+            buf = buf[i:]
         if len(buf) < 24:
             return out, buf
         plen = int.from_bytes(buf[12:16], "little")
-        total = 24 + plen
-        if len(buf) < total:
+        if plen <= 0 or plen > (1 << 22):
+            buf = buf[4:]                     # bad length: resync past this magic
+            continue
+        if len(buf) < 24 + plen:
             return out, buf
-        out.append(buf[:total])
-        buf = buf[total:]
+        frame, buf = buf[:24 + plen], buf[24 + plen:]
+        w = int.from_bytes(frame[16:20], "little")
+        h = int.from_bytes(frame[20:24], "little")
+        if w and h:
+            out.append(frame)                 # skip control packets
 
 
 def main():
