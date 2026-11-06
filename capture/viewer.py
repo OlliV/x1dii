@@ -5,16 +5,18 @@ Video goes to ffplay in its own window; this window is only the controls. That s
 deliberate: Tk's photo-image path costs real compositing time per frame and made the
 buttons feel dead, while ffplay is a native video renderer and stays smooth.
 
-Because ffplay is a separate process, the control window is forced topmost. Without it the
-preview can sit over the controls and swallow every mouse click, which is indistinguishable
-from an unresponsive UI - the clicks never reach this process at all. If buttons ever seem
-dead, check the log (captures/x1d-tether.log from a checkout, ~/Library/Logs/X1D Tether
-otherwise) for "click ..." lines before changing any widget code.
+Because ffplay is a separate process (and a separate macOS app), its window is opened just
+below the controls so the two never overlap. The controls are deliberately NOT topmost:
+`-topmost` puts a Tk window at the utility window level, which macOS will not move between
+desktops, and it keeps the controls visible while another app is active - inviting clicks
+that Tk then drops (below).
 
-On macOS the window can be visible and topmost yet not actually be the key window; then
-clicks never reach the process. Clicking the title bar fixes it, and _raise_controls() does
-the equivalent automatically at startup. Space and Return also fire CAPTURE, so the app
-stays usable from the keyboard.
+Tk 8.6.12, which the python.org 3.11 installer ships, discards any mouse press that arrives
+while the app is not the active one; only a title-bar click or a key press activates it
+cleanly. Tk 8.6.13 removed that. So _raise_controls() activates the app at startup and
+again when ffplay's window first appears and takes focus. If buttons ever seem dead, check
+the log (captures/x1d-tether.log from a checkout, ~/Library/Logs/X1D Tether otherwise) for
+"click ..." lines before changing any widget code. Space and Return also fire CAPTURE.
 
     python3 capture/viewer.py [--record out.h264]
 
@@ -174,8 +176,10 @@ class App:
         self.disconnected = True
         self.cam = None
         self.session_ok = False
+        self._establishing = False              # a session replay is running
+        self._live_switching = False            # a Live view toggle is being applied
+        self._busy_shown = False                # Live view is greyed out for it
         self.download_dir = None
-        self._saved_path = None
         self._vars = {}                         # control label -> tk.StringVar
         self._menus = {}                        # control label -> tk.OptionMenu
         self._values = {}                       # control label -> {shown text: raw value}
@@ -237,8 +241,9 @@ class App:
         view = tk.Frame(bar, bg="#111")
         view.pack(side="left", padx=(18, 4))
         self.live_var = tk.BooleanVar(value=self._live_pref)
-        self._check(view, " Live view", self.live_var,
-                    self._toggle_live).pack(anchor="w")
+        self.live_check = self._check(view, " Live view", self.live_var,
+                                      self._toggle_live)
+        self.live_check.pack(anchor="w")
         self.live_hint = tk.Label(view, bg="#111", fg="#777", font=("Menlo", 9),
                                   text=self._live_hint_text(), anchor="w", width=22)
         self.live_hint.pack(anchor="w", pady=(2, 0))
@@ -320,12 +325,6 @@ class App:
                 signal.signal(sig, lambda *_: self.root.after(0, self.on_close))
             except Exception:
                 pass
-        # keep the controls above the preview window: ffplay is a separate process and
-        # can otherwise sit on top, swallowing every click meant for these controls
-        try:
-            root.attributes("-topmost", True)
-        except Exception:
-            pass
         # diagnostic: log every click that reaches the app, with the widget it hit, so a
         # dead button can be told apart from a click that never arrived
         root.bind_all("<Button-1>",
@@ -342,23 +341,40 @@ class App:
             time.sleep(0.3)
         except Exception:
             pass
+        # A minimal probe rather than -fflags nobuffer: both keep start-up latency low,
+        # but with nobuffer ffplay opens its window before it knows the video size and
+        # then ignores -left/-top/-x/-y, landing at 640x480 in the middle of the screen.
+        left, top, height = self._preview_geometry()
         self.player = subprocess.Popen(
-            ["ffplay", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
-             "-framedrop", "-autoexit", "-f", "h264",
+            ["ffplay", "-loglevel", "error", "-probesize", "32", "-analyzeduration", "0",
+             "-flags", "low_delay", "-framedrop", "-autoexit", "-f", "h264",
+             "-left", str(left), "-top", str(top), "-y", str(height),
              "-window_title", "X1D II live view", "-i", "-"],
             stdin=subprocess.PIPE)
-        # the preview is its own process and takes focus when it maps; keep the controls
-        # in front so a click lands on the button instead of only activating the window
-        for delay in (300, 1000, 2500):
-            self.root.after(delay, self._raise_controls)
+        # launched from a terminal or Finder the app is not necessarily active, and Tk
+        # 8.6.12 drops clicks until it is
+        self.root.after(300, self._raise_controls)
+        self.root.after(150, self._watch_busy)
         self._rec = open(record, "wb") if record else None
 
+        # Workers start once mainloop() runs: they call into Tk, which raises from a
+        # worker thread until the event loop exists. The first connection is made by
+        # _reconnect, off the UI thread - see the locking rule on _start_workers.
+        self.root.after(0, self._start_workers)
+
+    def _start_workers(self):
+        """Start the background threads.
+
+        Locking rule: the UI thread never waits for self.lock (the camera lock); camera
+        I/O from a button goes to a worker. Tk runs every call on the UI thread, so a
+        worker that updates a widget while holding the lock waits for the UI thread; if
+        the UI thread were itself waiting for the lock, both would hang for good. Keeping
+        Tk calls outside the lock where it is easy (as _load_controls does) also stops a
+        busy UI from holding up the camera.
+        """
         for fn in (self._reader, self._writer, self._watchdog, self._reconnect,
                    self._stats, self._poll):
             threading.Thread(target=fn, daemon=True).start()
-
-        self._try_connect()
-        self._load_controls()
 
     # ---- ui helpers
 
@@ -496,18 +512,29 @@ class App:
         b.bind("<Leave>", lambda e: b.configure(bg=bg))
         return b
 
-    def _raise_controls(self):
-        """Activate the window the way clicking its title bar does.
+    def _preview_geometry(self):
+        """Where ffplay's window goes: (left, top, height) in screen pixels.
 
-        On macOS a window can be visible and topmost yet not be the key window, in which
-        case clicks on its buttons never reach the process at all. Re-asserting topmost
-        and forcing focus is what a title-bar click would do; it is retried a few times
-        because ffplay's window appears shortly after startup and can take focus back.
+        Directly below the controls and left-aligned with them, sized to the screen space
+        left underneath (ffplay keeps the aspect ratio when only the height is forced).
+        """
+        self.root.update_idletasks()
+        self.root.update()                       # map the window so its position is real
+        left = self.root.winfo_rootx()
+        bottom = self.root.winfo_rooty() + self.root.winfo_height()
+        top = bottom + 40                        # room for the preview's own title bar
+        height = max(240, min(900, self.root.winfo_screenheight() - top - 40))
+        return left, top, height
+
+    def _raise_controls(self):
+        """Make this the active app, as clicking its title bar does.
+
+        Tk 8.6.12 drops mouse presses while the app is inactive, so after anything that
+        takes activation away (launch from a terminal, ffplay's window appearing) the
+        first click on a button would otherwise only activate the window.
         """
         try:
             self.root.lift()
-            self.root.attributes("-topmost", False)
-            self.root.attributes("-topmost", True)
             self.root.focus_force()
             self.root.focus_set()
         except Exception:
@@ -565,6 +592,29 @@ class App:
     def _live_hint_text(self):
         return "cable release armed" if not self._live_pref else "body shutter blocked"
 
+    def _camera_busy(self):
+        """True while the camera is in the middle of something a mode switch would break:
+        a session replay, a capture or stack (until CAPTURE is live again), a download,
+        or a previous Live view switch still being applied."""
+        return (self._live_switching or self._establishing or self.capturing
+                or self.downloading or not self._capture_enabled)
+
+    def _watch_busy(self):
+        """UI thread, every 150 ms: grey out Live view while the camera is busy.
+
+        Polled rather than set at each busy point because those are spread over several
+        worker threads, and a worker must not touch Tk itself (see _start_workers).
+        """
+        if not self.running:
+            return
+        busy = self._camera_busy()
+        if busy != self._busy_shown:
+            self._busy_shown = busy
+            self.live_check.configure(state="disabled" if busy else "normal")
+            self.live_hint.configure(
+                text="camera busy..." if busy else self._live_hint_text())
+        self.root.after(150, self._watch_busy)
+
     def _save_pref(self):
         """Persist the three choices that survive a restart."""
         cfg = {}
@@ -592,25 +642,39 @@ class App:
         so turning the preview off makes sure one exists.
         """
         on = self.live_var.get()
+        if self._camera_busy():
+            # a click that landed before _watch_busy greyed the box out: undo it
+            self.live_var.set(not on)
+            self._log("live view -> %s ignored: camera busy" % on)
+            return
         self._live_pref = bool(on)
         self._save_pref()
         self.live_hint.configure(text=self._live_hint_text())
         self._log("live view -> %s" % on)
-        if on:
+
+        def run():                       # camera I/O stays off the UI thread
             try:
-                self._start_live()
-            except Exception as e:
-                self._log("live view on failed: %s" % e)
-            self._say("live view on - the body shutter cannot fire while streaming")
-        else:
-            try:
-                self._stop_live()
-            except Exception as e:
-                self._log("live view off failed: %s" % e)
-            if not self.session_ok:
-                threading.Thread(target=self._ensure_session, daemon=True).start()
-            else:
-                self._say("live view off - press the cable release on the camera")
+                if self.cam is None:
+                    return
+                if on:
+                    try:
+                        self._start_live()
+                    except Exception as e:
+                        self._log("live view on failed: %s" % e)
+                    self._say("live view on - the body shutter cannot fire while streaming")
+                    return
+                try:
+                    self._stop_live()
+                except Exception as e:
+                    self._log("live view off failed: %s" % e)
+                if not self.session_ok:
+                    self._ensure_session()
+                else:
+                    self._say("live view off - press the cable release on the camera")
+            finally:
+                self._live_switching = False
+        self._live_switching = True
+        threading.Thread(target=run, daemon=True).start()
 
     def _stop_live(self):
         """Stop the preview stream and stand the watchdog down for this mode."""
@@ -629,8 +693,9 @@ class App:
         missing session file went unnoticed and left the app silently unable to transfer
         anything the body shot.
         """
-        if self.session_ok or self.cam is None:
+        if self.session_ok or self.cam is None or self._establishing:
             return
+        self._establishing = True
         self.downloading = True              # the replay reads 0x84: reader stand down
         try:
             self._say("establishing tether session ...")
@@ -655,6 +720,7 @@ class App:
             self._say("session failed: %s" % e)
         finally:
             self.downloading = False
+            self._establishing = False
 
     # ---- connection
 
@@ -691,23 +757,33 @@ class App:
             self._log("connect: live view started")
         else:
             # no preview: the point of this mode is that the body shutter still works, so
-            # the tether session is what we need instead. Start it only once the event
-            # loop is running - Tk cannot be touched from a worker before mainloop().
+            # the tether session is what we need instead; _reconnect establishes it
             self._log("connect: live view off, establishing cable-release session")
-            self.root.after(600, lambda: threading.Thread(
-                target=self._ensure_session, daemon=True).start())
         self.disconnected = False
         self._recover_until = time.time() + 3
         return True
 
     def _reconnect(self):
+        """Connect, and reconnect whenever the camera goes away.
+
+        In cable-release mode the session comes before the exposure menus: it is what
+        lets the body's own shutter deliver images, while reading the menus holds the
+        camera for several seconds and would only delay it.
+        """
+        first = True
         while self.running:
-            time.sleep(1.5)
+            if not first:
+                time.sleep(1.5)
             if self.running and self.disconnected:
-                self._log("reconnect: retrying")
+                if not first:
+                    self._log("reconnect: retrying")
                 if self._try_connect():
-                    self._say("camera reconnected")
+                    if not first:
+                        self._say("camera reconnected")
+                    if not self._live_pref:
+                        self._ensure_session()
                     self._load_controls()
+            first = False
 
     def _start_live(self):
         with self.lock:
@@ -730,37 +806,48 @@ class App:
             self.disconnected = True
 
     def _load_controls(self):
-        if self.cam is None:
-            return
-        with self.lock:
-            for label, code, name_code in CONTROLS:
-                try:
-                    desc = self.cam.describe(code)
-                    cur = self.cam.read(code)
-                except Exception:
-                    continue
-                if label == "ISO":
-                    order, values = params.iso_choices(desc)
-                else:
-                    names = (params.name_table(self.cam.describe(name_code))
+        """Read each exposure control's choices, then fill its menu on the UI thread.
+
+        Runs on a worker. The lock is held only for one control's camera reads at a time
+        and never while Tk is touched (see _start_workers).
+        """
+        for label, code, name_code in CONTROLS:
+            cam = self.cam
+            if cam is None:
+                return
+            try:
+                with self.lock:
+                    desc = cam.describe(code)
+                    cur = cam.read(code)
+                    names = (params.name_table(cam.describe(name_code))
                              if name_code else [])
-                    order, values = params.named_choices(desc, names)
-                om = self._menus[label]
-                var = self._vars[label]
-                menu = om["menu"]
-                menu.delete(0, "end")
-                for choice in order:
-                    menu.add_command(label=choice,
-                                     command=lambda v=choice, lb=label: self._choose(lb, v))
-                self._values[label] = values
-                if order:
-                    var.set(params.current_choice(order, values, cur))
-                    om.configure(state="normal")
-                else:
-                    var.set("n/a")
-                    om.configure(state="disabled")
-                self._applied[label] = var.get()
-                self._log("%s: %d choices current=%r" % (label, len(order), cur))
+            except Exception:
+                continue
+            if label == "ISO":
+                order, values = params.iso_choices(desc)
+            else:
+                order, values = params.named_choices(desc, names)
+            self._log("%s: %d choices current=%r" % (label, len(order), cur))
+            self.root.after(0, lambda lb=label, o=order, v=values, c=cur:
+                            self._fill_menu(lb, o, v, c))
+
+    def _fill_menu(self, label, order, values, current):
+        """UI thread: replace a control's menu with freshly read choices."""
+        om = self._menus[label]
+        var = self._vars[label]
+        menu = om["menu"]
+        menu.delete(0, "end")
+        for choice in order:
+            menu.add_command(label=choice,
+                             command=lambda v=choice, lb=label: self._choose(lb, v))
+        self._values[label] = values
+        if order:
+            var.set(params.current_choice(order, values, current))
+            om.configure(state="normal")
+        else:
+            var.set("n/a")
+            om.configure(state="disabled")
+        self._applied[label] = var.get()
 
     def _draw_mode(self, name, accent):
         self.mode_badge.configure(text=name, bg=accent)
@@ -846,19 +933,25 @@ class App:
 
         def run():
             self.capturing = True
-            self._saved_path = None
-            if self.save_var.get() and not self.download_dir:
-                self._say("no folder chosen - this shot goes to the card only")
-            want_save = bool(self.save_var.get() and self.download_dir)
-            if want_save and not self.session_ok:
-                self._say("waiting for the tether session to finish ...")
-                deadline = time.time() + 90
-                while time.time() < deadline and not self.session_ok and self.running:
-                    time.sleep(0.3)
-            saving = bool(want_save and self.session_ok)
             token = None
+            in_session = False
             try:
-                if saving:
+                if self.save_var.get() and not self.download_dir:
+                    self._say("no folder chosen - this shot goes to the card only")
+                if self.save_var.get() and self.download_dir and not self.session_ok:
+                    self._ensure_session()       # saving needs one; no-op if running
+                # whether a session exists decides how the camera delivers the shot, so
+                # wait for one that is being set up rather than racing it
+                deadline = time.time() + 90
+                while self._establishing and self.running and time.time() < deadline:
+                    time.sleep(0.2)
+                in_session = self.session_ok
+                if in_session:
+                    # In a session the camera offers every shot to the host and holds it
+                    # until it is fetched - the same as a press of the body's shutter.
+                    # release() would answer the offer with Phocus's commit frames, and
+                    # the first of those starts a transfer that nothing then reads,
+                    # leaving the camera busy (ack 09) until it is power cycled.
                     with self.lock:
                         token = self.cam.capture_token()
                     self._log("capture: tether token=%r" % token)
@@ -870,22 +963,9 @@ class App:
                 self._log("capture: EXCEPTION %s: %s" % (type(e).__name__, e))
             finally:
                 self.capturing = False
-            if token and saving:
-                try:
-                    self._say("downloading capture ...")
-                    dest = os.path.join(self.download_dir, "capture_%04x.3fr" % token)
-                    self.downloading = True      # stop the preview stealing 0x84
-                    time.sleep(0.4)              # let the reader notice and stand down
-                    try:
-                        with self.lock:
-                            n = self.cam.download(token, dest)
-                    finally:
-                        self.downloading = False
-                    self._log("capture: saved %s (%d bytes, expected %r)"
-                              % (dest, n, self.cam.last_download_expected))
-                    self._saved_path = dest if n else None
-                except Exception as e:
-                    self._log("capture: download failed %s" % e)
+            if token is not None and in_session:
+                self._seen_tokens.add(token)     # do not fetch it again from the event
+                self._fetch_external(token)      # saves or caches it, shows the still
             self._recover_until = time.time() + 8
             time.sleep(1.2)
             if self._live_pref:
@@ -895,10 +975,8 @@ class App:
                     self._log("capture: restart failed %s" % e)
             self.root.after(0, lambda: self._set_capture_enabled(True))
             if token is None:
-                self._say("capture failed - is live view running?")
-            elif self._saved_path:
-                self._say("saved %s" % os.path.basename(self._saved_path))
-            else:
+                self._say("capture failed - the camera did not report a shot")
+            elif not in_session:
                 self._say("captured (token 0x%04x)" % token)
         threading.Thread(target=run, daemon=True).start()
 
@@ -1082,7 +1160,10 @@ class App:
         return self._cache_path
 
     def _fetch_external(self, token):
-        """Pull a body-triggered capture to the host and show it.
+        """Pull an offered capture to the host and show it.
+
+        Used for the body's shutter and the on-screen CAPTURE alike whenever a tether
+        session is active.
 
         With Save a copy off the transfer is only needed to make the still, so the raw
         file is deleted once the JPEG is out of it - otherwise every shot would leave
@@ -1176,10 +1257,6 @@ class App:
         lab = tk.Label(win, image=img, bg="#000", name="img")
         lab.pack()
         win.image = img                     # keep a reference or Tk drops the pixels
-        try:
-            win.attributes("-topmost", True)
-        except Exception:
-            pass
         self._still_win = win
 
     def _poll(self):
@@ -1212,6 +1289,11 @@ class App:
             if self._rec:
                 self._rec.write(payload)
             self._frames_seen += 1
+            if self._frames_seen == 1:
+                # ffplay maps its window on the first decoded frame and activates itself;
+                # take activation back once it has, or the next click is lost
+                for delay in (800, 2000):
+                    self.root.after(delay, self._raise_controls)
             self.times.append(time.time())
             self._last_frame_time = time.time()
             try:
@@ -1336,24 +1418,31 @@ class App:
             pass
 
     def on_close(self):
+        """Close the session cleanly if the camera is free, without ever hanging the UI.
+
+        A worker may hold the lock for a long transfer. Waiting a few seconds is fine;
+        waiting forever is not, and closing USB under a running transfer is worse than
+        skipping the goodbye, so after the timeout the camera is simply left alone.
+        """
         self.running = False
-        try:
-            if self.cam is not None:
-                with self.lock:
-                    self.cam.stop_live()
-        except Exception:
-            pass
         if self._rec:
             self._rec.close()
         try:
             self.player.kill()
         except Exception:
             pass
-        try:
-            if self.cam is not None:
-                self.cam.close()
-        except Exception:
-            pass
+        cam = self.cam
+        if cam is not None:
+            if self.lock.acquire(timeout=3.0):
+                try:
+                    cam.stop_live()
+                    cam.close()
+                except Exception:
+                    pass
+                finally:
+                    self.lock.release()
+            else:
+                self._log("close: camera busy, leaving the session open")
         self.root.destroy()
 
 

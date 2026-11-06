@@ -69,29 +69,38 @@ def stream_parse(buf):
     interleaved with video - a reader that only looks for "LIVE" discards it.
     """
     frames, events = [], []
-    while buf:
-        if buf.startswith(hbctl.HDR_IN):
-            if len(buf) < 5:
+    i, n = 0, len(buf)
+    while i < n:
+        if buf.startswith(hbctl.HDR_IN, i):
+            if n - i < 5:
                 break
-            n = buf[4]
-            if len(buf) < 5 + n:
+            end = i + 5 + buf[i + 4]
+            if end > n:
                 break
-            events.append(buf[5:5 + n])
-            buf = buf[5 + n:]
-        elif buf.startswith(b"LIVE"):
-            if len(buf) < 24:
+            events.append(buf[i + 5:end])
+            i = end
+        elif buf.startswith(b"LIVE", i):
+            if n - i < 24:
                 break
-            plen = int.from_bytes(buf[12:16], "little")
+            plen = int.from_bytes(buf[i + 12:i + 16], "little")
             if plen <= 0 or plen > (1 << 22):
-                buf = buf[4:]
+                i += 4                    # bad length: resync past this magic
                 continue
-            if len(buf) < 24 + plen:
+            if n - i < 24 + plen:
                 break
-            frames.append(buf[:24 + plen])
-            buf = buf[24 + plen:]
+            frames.append(buf[i:i + 24 + plen])
+            i += 24 + plen
         else:
-            buf = buf[1:]                 # resync to the next packet boundary
-    return frames, events, buf
+            # Not at a packet: jump to the next header rather than stepping a byte at a
+            # time. Anything else on the channel - a stray file transfer is megabytes -
+            # would otherwise cost a full copy of the buffer per byte skipped.
+            nxt = [j for j in (buf.find(hbctl.HDR_IN, i), buf.find(b"LIVE", i)) if j >= 0]
+            if nxt:
+                i = min(nxt)
+            else:
+                i = max(i, n - 3)         # keep a header split across two reads
+                break
+    return frames, events, buf[i:]
 
 
 def frames_from(buf):

@@ -23,17 +23,31 @@ say() { printf '  %s\n' "$*"; }
 echo "Building $NAME.app"
 
 # ---- 1. an interpreter with Tk
+# Prefer Tk 9: Tk 8.6.12 (python.org 3.11) drops mouse clicks while the app is not the
+# active one, so buttons need several clicks. Homebrew's python-tk@3.x brings Tk 9.
+# Only tkinter.TkVersion is checked - creating a Tk window here can abort the process.
+# The repo's .venv is deliberately not a candidate: the launcher bakes in this path, and a
+# bundle must not depend on where the checkout lives.
+CANDIDATES="/opt/homebrew/bin/python3.14 /opt/homebrew/bin/python3.13 \
+            /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3 \
+            $(ls -r /Library/Frameworks/Python.framework/Versions/*/bin/python3 2>/dev/null | tr '\n' ' ') \
+            /usr/local/bin/python3 $(command -v python3 2>/dev/null || true)"
 PYTHON=""
-for cand in /Library/Frameworks/Python.framework/Versions/*/bin/python3 \
-            /opt/homebrew/bin/python3 /usr/local/bin/python3 \
-            "$(command -v python3 2>/dev/null || true)"; do
-    [ -n "$cand" ] && [ -x "$cand" ] || continue
-    if "$cand" -c 'import tkinter' >/dev/null 2>&1; then
-        PYTHON="$cand"; break
-    fi
+for min_tk in 9.0 0; do
+    for cand in $CANDIDATES; do
+        [ -x "$cand" ] || continue
+        if "$cand" -c "import tkinter,sys; sys.exit(tkinter.TkVersion < $min_tk)" >/dev/null 2>&1; then
+            PYTHON="$cand"; break 2
+        fi
+    done
 done
 [ -n "$PYTHON" ] || { echo "error: no python3 with tkinter found" >&2; exit 1; }
-say "python:  $PYTHON"
+TK_VERSION=$("$PYTHON" -c 'import tkinter; print(tkinter.TkVersion)')
+say "python:  $PYTHON (Tk $TK_VERSION)"
+case "$TK_VERSION" in
+    8.*) say "warning: Tk $TK_VERSION - before 8.6.13 buttons drop clicks while inactive;" \
+             "brew install python-tk@3.13 for Tk 9" ;;
+esac
 
 # ---- 2. ffplay (external dependency)
 FFPLAY="$(command -v ffplay 2>/dev/null || true)"
@@ -54,6 +68,9 @@ find "$RES/app" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null |
 
 # ---- 4. vendor pyusb
 USB_PARENT=$("$PYTHON" -c 'import usb,os;print(os.path.dirname(os.path.dirname(usb.__file__)))' 2>/dev/null || true)
+if [ -z "$USB_PARENT" ] && [ -x "$ROOT/.venv/bin/python" ]; then
+    USB_PARENT=$("$ROOT/.venv/bin/python" -c 'import usb,os;print(os.path.dirname(os.path.dirname(usb.__file__)))' 2>/dev/null || true)
+fi
 if [ -z "$USB_PARENT" ] && [ -d /tmp/pylibs ]; then
     USB_PARENT=$(PYTHONPATH=/tmp/pylibs "$PYTHON" -c 'import usb,os;print(os.path.dirname(os.path.dirname(usb.__file__)))' 2>/dev/null || true)
 fi

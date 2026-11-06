@@ -9,3 +9,5 @@ crash.txt
 # firmware image is 233 MB; fetch it from the update file, do not version it
 *.cim
 dist/
+# local interpreter for run_capture.sh (Homebrew python + python-tk, with pyusb)
+.venv/
