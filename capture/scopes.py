@@ -95,9 +95,14 @@ def vectorscope(img, size, full=CHROMA_FULL):
     cb = -0.168736 * r - 0.331264 * g + 0.5 * b
     cr = 0.5 * r - 0.418688 * g - 0.081312 * b
     half = size / 2
-    x = np.clip(half + cb / full * half, 0, size - 1).astype(np.int32)
-    y = np.clip(half - cr / full * half, 0, size - 1).astype(np.int32)
-    counts = np.bincount((y * size + x).ravel(), minlength=size * size).reshape(size, size)
+    fx = (half + cb / full * half).ravel()
+    fy = (half - cr / full * half).ravel()
+    # chroma beyond the edge (zoomed in) falls off the scope rather than piling up on
+    # the border
+    keep = (fx - half) ** 2 + (fy - half) ** 2 < half * half
+    x = np.clip(fx[keep], 0, size - 1).astype(np.int32)
+    y = np.clip(fy[keep], 0, size - 1).astype(np.int32)
+    counts = np.bincount(y * size + x, minlength=size * size).reshape(size, size)
     v = np.log1p(counts) / math.log1p(max(1, counts.max()))
     v = np.clip(v * 1.5, 0, 1)[..., None]
     hue = _HUE.get((size, full))
