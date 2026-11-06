@@ -1407,12 +1407,12 @@ class App:
         stem = os.path.splitext(os.path.basename(raw_path))[0]
         if not self._live_pref:
             try:
-                image = gallery.decode(data[i:j + 2])
+                decoded = gallery.decode(data[i:j + 2])
             except Exception as e:
                 self._log("still: cannot decode %s (%s)" % (stem, e))
                 return
             self._log("still: %d bytes of JPEG from %s -> gallery" % (j - i + 2, stem))
-            self.root.after(0, lambda: self.gallery.add(image, stem))
+            self.root.after(0, lambda: self.gallery.add(decoded, stem))
             return
         cache = self._cache_dir()
         jpg = os.path.join(cache, "still.jpg")

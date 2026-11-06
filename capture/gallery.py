@@ -2,12 +2,15 @@
 
 A dark window where the live preview would otherwise sit, as large as fits below the
 controls and freely resizable. It shows the four most recent captures in a 2x2 grid,
-newest top-left; clicking one fills the window with it and clicking again goes back to
-the grid. Esc also goes back, 1-4 open a capture, and space or return fire the shutter as
-they do in the controls window.
+newest top-left. Clicking one fills the window with it; clicking a spot there zooms to
+100% around it, to judge focus, and a click (without dragging) goes back to fitting the
+window. While zoomed, drag or two-finger scroll to look around; a small overview in the
+corner shows where. Esc goes back to the grid, 1-4 open a capture, and space or return
+fire the shutter as they do in the controls window.
 
-Each capture's embedded JPEG is decoded once (decode(), on a worker) and kept in memory;
-the window resizes those with Pillow to whatever size it currently is.
+Each capture's embedded JPEG (4136 x 3100, half the sensor in each direction) is decoded
+once (decode(), on a worker) and kept in memory at full size, with a smaller copy for the
+grid and the fitted view; the window resizes those with Pillow as it needs.
 """
 import io
 import time
@@ -20,20 +23,18 @@ import widgets as ui
 SLOTS = 4
 GAP = 3                   # between cells
 ASPECT = 4 / 3            # the X1D II sensor, 8272 x 6200
-KEEP_EDGE = 3000          # decoded size kept per capture; plenty for any screen
+VIEW_EDGE = 1800          # the copy used for the grid and the fitted view
+NAV_EDGE = 150            # the overview shown while zoomed
+DRAG = 4                  # pointer travel, in points, that makes a press a drag
 
 
 def decode(jpeg):
-    """JPEG bytes -> an RGB image no larger than KEEP_EDGE. Safe on a worker thread.
-
-    draft() lets the JPEG decoder scale down by a power of two while decoding, which is
-    much faster than decoding the full frame and shrinking it afterwards.
-    """
-    img = Image.open(io.BytesIO(jpeg))
-    img.draft("RGB", (KEEP_EDGE, KEEP_EDGE))
-    img = img.convert("RGB")
-    img.thumbnail((KEEP_EDGE, KEEP_EDGE), Image.LANCZOS)
-    return img
+    """JPEG bytes -> (full, view): the preview at full size and a copy no larger than
+    VIEW_EDGE for drawing it small. Safe on a worker thread."""
+    full = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    view = full.copy()
+    view.thumbnail((VIEW_EDGE, VIEW_EDGE), Image.LANCZOS)
+    return full, view
 
 
 def fit(img, box):
@@ -63,6 +64,9 @@ class Gallery:
         self.items = []               # newest first: dict(image, title, when, cache)
         self.single = None            # index shown full, or None for the grid
         self.hover = None             # grid cell under the pointer
+        self.zoom = None              # (cx, cy) in full-size pixels while at 100%
+        self._press = None            # (x, y, zoom-at-press) for click-or-drag
+        self._dragged = False
         self.win = None
         self.canvas = None
         self._images = []             # PhotoImage references, or Tk drops the pixels
@@ -77,12 +81,14 @@ class Gallery:
 
     # ---- content
 
-    def add(self, image, title):
-        """UI thread: a new capture (from decode()). Shows the grid, newest first."""
-        self.items.insert(0, {"image": image, "title": title,
+    def add(self, decoded, title):
+        """UI thread: a new capture (decode()'s result). Shows the grid, newest first."""
+        full, view = decoded
+        self.items.insert(0, {"full": full, "view": view, "title": title,
                               "when": time.strftime("%H:%M:%S"), "cache": {}})
         del self.items[SLOTS:]
         self.single = None
+        self.zoom = None
         self._ensure_window()
         self.redraw()
 
@@ -92,7 +98,9 @@ class Gallery:
         photo = item["cache"].get(key)
         if photo is None:
             item["cache"].clear()                 # one size per item is all that is shown
-            photo = ImageTk.PhotoImage(fit(item["image"], key), master=self.root)
+            view = item["view"]
+            src = view if key[0] <= view.width and key[1] <= view.height else item["full"]
+            photo = ImageTk.PhotoImage(fit(src, key), master=self.root)
             item["cache"][key] = photo
         return photo
 
@@ -116,8 +124,13 @@ class Gallery:
         c.pack(fill="both", expand=True)
         c.bind("<Configure>", self._configure)
         win.bind("<Configure>", self._moved)
-        c.bind("<Button-1>", self._click)
+        c.bind("<ButtonPress-1>", self._press_at)
+        c.bind("<B1-Motion>", self._drag)
+        c.bind("<ButtonRelease-1>", self._release)
         c.bind("<Motion>", self._motion)
+        c.bind("<MouseWheel>", lambda e: self._scroll(0, e.delta))
+        c.bind("<Shift-MouseWheel>", lambda e: self._scroll(e.delta, 0))
+        c.bind("<TouchpadScroll>", self._touchpad)
         c.bind("<Leave>", lambda e: self._set_hover(None))
         win.bind("<Escape>", lambda e: self.show_grid())
         for n in range(1, SLOTS + 1):
@@ -159,12 +172,16 @@ class Gallery:
     def show_grid(self):
         if self.single is not None:
             self.single = None
+            self.zoom = None
+            self._set_cursor()
             self.redraw()
 
     def show_single(self, index):
         if 0 <= index < len(self.items):
             self.single = index
             self.hover = None
+            self.zoom = None
+            self._set_cursor()
             self.redraw()
 
     # ---- input
@@ -175,11 +192,98 @@ class Gallery:
         row = 0 if y < ch + GAP / 2 else 1
         return row * 2 + col
 
-    def _click(self, event):
-        if self.single is not None:
-            self.show_grid()
+    def _press_at(self, event):
+        self._press = (event.x, event.y, self.zoom)
+        self._dragged = False
+
+    def _drag(self, event):
+        """While zoomed, the image follows the pointer, as a hand would move it."""
+        if self._press is None or self._press[2] is None or self.zoom is None:
             return
-        self.show_single(self._cell_at(event.x, event.y))
+        x0, y0, (cx0, cy0) = self._press
+        dx, dy = event.x - x0, event.y - y0
+        if not self._dragged and abs(dx) + abs(dy) < DRAG:
+            return
+        if not self._dragged:
+            self._dragged = True
+            self._set_cursor("closedhand")
+        self._pan_to(cx0 - dx, cy0 - dy)
+
+    def _release(self, event):
+        press, self._press = self._press, None
+        if press is None:
+            return
+        if self._dragged:
+            self._dragged = False
+            self._set_cursor()
+            return
+        if self.single is None:
+            self.show_single(self._cell_at(event.x, event.y))
+        elif self.zoom is None:
+            self._zoom_at(event.x, event.y)
+        else:
+            self.zoom = None                   # a plain click while zoomed: fit again
+            self._set_cursor()
+            self.redraw()
+
+    def _fit_rect(self, item):
+        """Where the fitted image sits in the window: (x0, y0, scale) of the full image."""
+        full = item["full"]
+        scale = min(self.w / full.width, self.h / full.height)
+        return ((self.w - full.width * scale) / 2, (self.h - full.height * scale) / 2,
+                scale)
+
+    def _zoom_at(self, x, y):
+        """Zoom to 100% so the clicked spot stays under the pointer."""
+        item = self.items[self.single]
+        x0, y0, scale = self._fit_rect(item)
+        px, py = (x - x0) / scale, (y - y0) / scale        # the spot, in full pixels
+        self.zoom = (0, 0)
+        self._pan_to(px - (x - self.w / 2), py - (y - self.h / 2), draw=False)
+        self._set_cursor()
+        self.redraw()
+
+    def _pan_to(self, cx, cy, draw=True):
+        """Centre the 100% view on (cx, cy), kept so the image never leaves the window."""
+        full = self.items[self.single]["full"]
+        half_w, half_h = self.w / 2, self.h / 2
+        cx = full.width / 2 if full.width <= self.w else \
+            min(max(cx, half_w), full.width - half_w)
+        cy = full.height / 2 if full.height <= self.h else \
+            min(max(cy, half_h), full.height - half_h)
+        if (cx, cy) != self.zoom:
+            self.zoom = (cx, cy)
+            if draw:
+                self.redraw()
+
+    def _scroll(self, dx, dy):
+        """A mouse wheel: pan while zoomed (Shift for sideways)."""
+        if self.zoom is not None:
+            self._pan_to(self.zoom[0] - dx * 4, self.zoom[1] - dy * 4)
+
+    def _touchpad(self, event):
+        """Two-finger scrolling on a trackpad pans while zoomed."""
+        if self.zoom is None:
+            return
+        try:
+            dx, dy = self.root.tk.splitlist(
+                self.root.tk.call("tk::PreciseScrollDeltas", event.delta))
+        except tk.TclError:
+            return
+        self._pan_to(self.zoom[0] - float(dx), self.zoom[1] - float(dy))
+
+    def _set_cursor(self, name=None):
+        if self.canvas is None:
+            return
+        if name is None:
+            if self.single is None:
+                name = "hand2" if self.hover is not None else "arrow"
+            else:
+                name = "openhand" if self.zoom is not None else "zoom-in"
+        try:
+            self.canvas.configure(cursor=name)
+        except tk.TclError:
+            self.canvas.configure(cursor="arrow")
 
     def _motion(self, event):
         if self.single is None:
@@ -189,8 +293,7 @@ class Gallery:
     def _set_hover(self, index):
         if index != self.hover:
             self.hover = index
-            if self.canvas is not None:
-                self.canvas.configure(cursor="hand2" if index is not None else "arrow")
+            self._set_cursor()
             self.redraw()
 
     # ---- drawing
@@ -202,7 +305,10 @@ class Gallery:
         c.delete("all")
         self._images = []
         if self.single is not None and self.single < len(self.items):
-            self._draw_single(self.items[self.single])
+            if self.zoom is not None:
+                self._draw_zoomed(self.items[self.single])
+            else:
+                self._draw_single(self.items[self.single])
         else:
             for slot in range(SLOTS):
                 self._draw_cell(slot)
@@ -255,9 +361,47 @@ class Gallery:
         c.create_image(self.w / 2, self.h / 2, image=photo)
         self._images.append(photo)
         self._caption(14, self.h - 14, item, latest=(self.single == 0))
-        hint = "click or Esc for all four"
-        hw = self.f_small.measure(hint)
+        self._hint("click to zoom to 100%  \u00b7  Esc for all four")
+
+    def _hint(self, text):
+        c = self.canvas
+        hw = self.f_small.measure(text)
         ui.rounded_rect(c, self.w - hw - 34, 12, self.w - 12, 36, 9, fill="#0b0b0c",
                         outline="")
-        c.create_text(self.w - 23, 24, text=hint, anchor="e", font=self.f_small,
+        c.create_text(self.w - 23, 24, text=text, anchor="e", font=self.f_small,
                       fill=ui.MUTED)
+
+    def _draw_zoomed(self, item):
+        """The full-size preview at 100%, only the part that is in the window."""
+        c = self.canvas
+        full = item["full"]
+        cx, cy = self.zoom
+        left = int(round(cx - self.w / 2))
+        top = int(round(cy - self.h / 2))
+        box = (max(0, left), max(0, top),
+               min(full.width, left + self.w), min(full.height, top + self.h))
+        photo = ImageTk.PhotoImage(full.crop(box), master=self.root)
+        c.create_image(box[0] - left, box[1] - top, image=photo, anchor="nw")
+        self._images.append(photo)
+        self._navigator(item, box)
+        self._caption(14, self.h - 14, item, latest=(self.single == 0))
+        self._hint("100%  \u00b7  drag to look around  \u00b7  click to fit")
+
+    def _navigator(self, item, box):
+        """A small overview with the visible area outlined, top-left."""
+        c = self.canvas
+        nav = item["cache"].get("nav")
+        if nav is None:
+            small = item["view"].copy()
+            small.thumbnail((NAV_EDGE, NAV_EDGE), Image.LANCZOS)
+            nav = (ImageTk.PhotoImage(small, master=self.root), small.width, small.height)
+            item["cache"]["nav"] = nav
+        photo, nw, nh = nav
+        x0, y0 = 14, 14
+        c.create_rectangle(x0 - 3, y0 - 3, x0 + nw + 3, y0 + nh + 3, fill="#0b0b0c",
+                           outline="")
+        c.create_image(x0, y0, image=photo, anchor="nw")
+        self._images.append(photo)
+        k = nw / item["full"].width
+        c.create_rectangle(x0 + box[0] * k, y0 + box[1] * k, x0 + box[2] * k,
+                           y0 + box[3] * k, outline=ui.ACCENT, width=1.5)
