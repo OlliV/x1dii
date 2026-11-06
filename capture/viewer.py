@@ -1098,12 +1098,6 @@ class App:
         """Run the camera's focus bracketing. Live view must be off for the sequence."""
         if self.capturing or self.cam is None or self.disconnected:
             return
-        if self.session_ok:
-            # in a session the camera hands frames to the host instead of the card, so
-            # bracketing produces nothing and the camera reports a failed transfer
-            self._say("turn off Save a copy and reconnect - tethered stacks go to the host")
-            self._log("stack refused: tether session active")
-            return
         frames = int(self.stack_frames.get())
         step = STEP_NAMES.index(self.stack_step.get())
         self.capturing = True
@@ -1113,6 +1107,7 @@ class App:
 
         def run():
             got = []
+            reopen = False
             try:
                 self._say("stack: stopping preview\u2026")
                 # Stop live view and CONFIRM the stream has stopped. With the preview
@@ -1137,9 +1132,19 @@ class App:
                 time.sleep(0.6)
                 self._say("stack: starting\u2026")
                 direction = DIR_NAMES.index(self.stack_dir.get())
+                # the body runs a bracket only with no tether session open: in one it
+                # offers the first frame to the host and stops there. So the session is
+                # closed for the stack and reopened after it; the frames go to the card.
                 with self.lock:
+                    if self.session_ok:
+                        self._say("stack: closing tether session\u2026")
+                        self.cam.end_session()
+                        self.session_ok = False
+                        reopen = True
+                        time.sleep(1.0)
                     got = self.cam.focus_bracket(
                         frames=frames, step=step, direction=direction,
+                        timeout=30 + frames * 8,
                         progress=lambda p, n: self._say("stack %d/%d" % (n, frames)))
                 self._log("stack: %d/%d frames" % (len(got), frames))
                 if not got:
@@ -1162,10 +1167,33 @@ class App:
                         self._start_live()
                     except Exception as e:
                         self._log("stack: live restart failed %s" % e)
+                elif reopen:
+                    self._settle_card()
+                    self._log("stack: reopening tether session")
+                    self._ensure_session()     # body-shutter shots reach the app again
                 self.root.after(0, lambda: self._set_capture_enabled(True))
         threading.Thread(target=run, daemon=True).start()
         # a wedged camera can block a USB read indefinitely; do not let that hold the UI
         self.root.after(int((frames * 10 + 45) * 1000), self._stack_watchdog)
+
+    def _settle_card(self, quiet=2.0, limit=15.0):
+        """Wait until the body has finished writing the stack before talking to it again.
+
+        The stack counts frames on the first card, but the body also writes each frame to
+        the second one; its last "file written" event arrives after the run is counted.
+        Replaying the tether session in the middle of that write made the camera show an
+        error, so wait for the control endpoint to stay quiet first.
+        """
+        end = time.time() + limit
+        last = time.time()
+        with self.lock:
+            while time.time() < end and time.time() - last < quiet:
+                p = self.cam._read_ctrl(300)
+                if p is not None:
+                    last = time.time()
+                    if len(p) >= 3:
+                        self._log("stack: settling, event 0x%02x" % p[2])
+        self._log("stack: card settled after %.1f s" % (time.time() - (end - limit)))
 
     def _stack_watchdog(self):
         if not self.capturing:
@@ -1289,37 +1317,44 @@ class App:
         file is deleted once the JPEG is out of it - otherwise every shot would leave
         another 100 MB behind for a picture the card already holds.
         """
-        saving = bool(self.save_var.get() and self.download_dir)
-        if saving:
-            dest = os.path.join(self.download_dir, "capture_%04x.3fr" % token)
-        else:
-            dest = os.path.join(self._cache_dir(), "capture_%04x.3fr" % token)
-        self._say("camera shot 0x%04x - downloading ..." % token)
         try:
             self.downloading = True          # the reader must release 0x84
             time.sleep(0.4)
             with self.lock:
-                n = self.cam.download(token, dest)
-            self._log("external capture %s (%d bytes, expected %r)"
-                      % (dest, n, self.cam.last_download_expected))
-            if not n:
-                self._say("camera shot 0x%04x - transfer refused" % token)
-                return
-            self._show_still(dest)
-            if saving:
-                self._say("saved %s" % os.path.basename(dest))
-            else:
-                self._say("camera shot 0x%04x (card only)" % token)
-                try:
-                    os.remove(dest)          # the still is already extracted
-                except Exception:
-                    pass
+                self._store_capture(token)
         except Exception as e:
             self._log("external capture failed %s" % e)
             self._say("camera shot download failed - %s" % type(e).__name__)
         finally:
             self.downloading = False
             self._recover_until = time.time() + 8
+
+    def _store_capture(self, token):
+        """Download an offered capture, show it, and keep or drop the raw file.
+
+        The caller holds self.lock and has the reader stood down (self.downloading).
+        """
+        saving = bool(self.save_var.get() and self.download_dir)
+        if saving:
+            dest = os.path.join(self.download_dir, "capture_%04x.3fr" % token)
+        else:
+            dest = os.path.join(self._cache_dir(), "capture_%04x.3fr" % token)
+        self._say("camera shot 0x%04x - downloading ..." % token)
+        n = self.cam.download(token, dest)
+        self._log("external capture %s (%d bytes, expected %r)"
+                  % (dest, n, self.cam.last_download_expected))
+        if not n:
+            self._say("camera shot 0x%04x - transfer refused" % token)
+            return
+        self._show_still(dest)
+        if saving:
+            self._say("saved %s" % os.path.basename(dest))
+        else:
+            self._say("camera shot 0x%04x (card only)" % token)
+            try:
+                os.remove(dest)          # the still is already extracted
+            except Exception:
+                pass
 
     def _show_still(self, raw_path):
         """Put the captured frame in the preview window.

@@ -455,6 +455,10 @@ class Camera:
 
         `direction` is 0x006e, confirmed the same way: 0 = towards infinity,
         1 = towards near, 2 = symmetric (near and far).
+
+        No tether session may be open: in one the body offers the first frame to the
+        host and never takes the second, whatever the host answers (tested with the
+        transfer and Phocus's op 1 / 0x0009 follow-up). Close it with end_session().
         """
         self.stop_live()
         time.sleep(0.6)
