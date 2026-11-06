@@ -179,6 +179,10 @@ class App:
         self._establishing = False              # a session replay is running
         self._live_switching = False            # a Live view toggle is being applied
         self._busy_shown = False                # Live view is greyed out for it
+        self.player = None                      # ffplay, running only while live view is
+        self._player_lock = threading.Lock()
+        self._player_written = 0                # payloads sent to the current player
+        self._pending_live_off = False          # preview closed while the camera was busy
         self.download_dir = None
         self._vars = {}                         # control label -> tk.StringVar
         self._menus = {}                        # control label -> tk.OptionMenu
@@ -341,16 +345,9 @@ class App:
             time.sleep(0.3)
         except Exception:
             pass
-        # A minimal probe rather than -fflags nobuffer: both keep start-up latency low,
-        # but with nobuffer ffplay opens its window before it knows the video size and
-        # then ignores -left/-top/-x/-y, landing at 640x480 in the middle of the screen.
-        left, top, height = self._preview_geometry()
-        self.player = subprocess.Popen(
-            ["ffplay", "-loglevel", "error", "-probesize", "32", "-analyzeduration", "0",
-             "-flags", "low_delay", "-framedrop", "-autoexit", "-f", "h264",
-             "-left", str(left), "-top", str(top), "-y", str(height),
-             "-window_title", "X1D II live view", "-i", "-"],
-            stdin=subprocess.PIPE)
+        # ffplay itself is started with live view (_ensure_player); only its place on
+        # screen is worked out here, because that needs Tk and so the UI thread
+        self._preview_geom = self._preview_geometry()
         # launched from a terminal or Finder the app is not necessarily active, and Tk
         # 8.6.12 drops clicks until it is
         self.root.after(300, self._raise_controls)
@@ -607,6 +604,7 @@ class App:
         """
         if not self.running:
             return
+        self._check_player()
         busy = self._camera_busy()
         if busy != self._busy_shown:
             self._busy_shown = busy
@@ -633,6 +631,78 @@ class App:
         except Exception as e:
             self._log("saving preferences failed: %s" % e)
 
+    # ---- the preview process
+
+    def _ensure_player(self):
+        """Start ffplay unless it is already running. Safe from any thread.
+
+        A minimal probe rather than -fflags nobuffer: both keep start-up latency low, but
+        with nobuffer ffplay opens its window before it knows the video size and then
+        ignores -left/-top/-x/-y, landing at 640x480 in the middle of the screen.
+        """
+        with self._player_lock:
+            if self.player is not None and self.player.poll() is None:
+                return
+            left, top, height = self._preview_geom
+            try:
+                self.player = subprocess.Popen(
+                    ["ffplay", "-loglevel", "error", "-probesize", "32",
+                     "-analyzeduration", "0", "-flags", "low_delay", "-framedrop",
+                     "-autoexit", "-f", "h264",
+                     "-left", str(left), "-top", str(top), "-y", str(height),
+                     "-window_title", "X1D II live view", "-i", "-"],
+                    stdin=subprocess.PIPE)
+            except OSError as e:
+                self.player = None
+                self._log("preview: cannot start ffplay (%s)" % e)
+                self._say("live view needs ffplay - brew install ffmpeg")
+                return
+            self._player_written = 0
+            self._log("preview: ffplay started (pid %d)" % self.player.pid)
+
+    def _stop_player(self, wait=1.5):
+        """Close the preview window. Safe from any thread.
+
+        Closing stdin is what ends ffplay cleanly: it plays to end-of-file and exits
+        (-autoexit). It is killed if that takes longer than `wait`.
+        """
+        with self._player_lock:
+            p, self.player = self.player, None
+        if p is None:
+            return
+        try:
+            p.stdin.close()
+        except Exception:
+            pass
+        try:
+            p.wait(timeout=wait)
+        except Exception:
+            p.kill()
+        self._log("preview: ffplay stopped")
+
+    def _check_player(self):
+        """UI thread: closing the preview window means "live view off".
+
+        ffplay exiting on its own - its window was closed - is treated exactly like
+        unticking Live view. If the camera is busy, the box is unticked straight away
+        (so nothing restarts the preview) and the camera side follows once it is free.
+        """
+        p = self.player
+        if p is not None and p.poll() is not None:
+            with self._player_lock:
+                if self.player is p:
+                    self.player = None
+            self._log("preview: window closed (ffplay exit %s)" % p.returncode)
+            if self._live_pref:
+                self.live_var.set(False)
+                self._live_pref = False
+                self._save_pref()
+                self._pending_live_off = True
+        if self._pending_live_off and not self._camera_busy():
+            self._pending_live_off = False
+            self._log("live view -> False (preview window closed)")
+            self._apply_live(False)
+
     def _toggle_live(self):
         """Swap between previewing and arming the cable release.
 
@@ -649,8 +719,13 @@ class App:
             return
         self._live_pref = bool(on)
         self._save_pref()
-        self.live_hint.configure(text=self._live_hint_text())
+        self._pending_live_off = False
         self._log("live view -> %s" % on)
+        self._apply_live(on)
+
+    def _apply_live(self, on):
+        """Carry out a live view switch on the camera, on a worker thread."""
+        self.live_hint.configure(text=self._live_hint_text())
 
         def run():                       # camera I/O stays off the UI thread
             try:
@@ -667,6 +742,7 @@ class App:
                     self._stop_live()
                 except Exception as e:
                     self._log("live view off failed: %s" % e)
+                self._stop_player()
                 if not self.session_ok:
                     self._ensure_session()
                 else:
@@ -786,6 +862,7 @@ class App:
             first = False
 
     def _start_live(self):
+        self._ensure_player()
         with self.lock:
             self.cam.stop_live()
             time.sleep(0.4)
@@ -1280,28 +1357,50 @@ class App:
                 pass
 
     def _writer(self):
+        """Feed H.264 payloads to ffplay.
+
+        While nothing is arriving, a one-byte-payload access unit delimiter - a no-op to
+        the decoder - goes out once a second. ffplay's reader blocks in read() on this
+        pipe, and closing its window waits for that reader: with no data, the window
+        would hang (beachball) instead of closing.
+        """
+        keepalive = b"\x00\x00\x00\x01\x09\xf0"
+        last_write = time.time()
         while self.running:
             with self.payloads_lock:
                 payload = self.payloads.popleft() if self.payloads else None
+            player = self.player
             if payload is None:
+                if (player is not None and self._player_written
+                        and time.time() - last_write > 1.0):
+                    self._write_player(player, keepalive)
+                    last_write = time.time()
                 time.sleep(0.002)
                 continue
             if self._rec:
                 self._rec.write(payload)
             self._frames_seen += 1
-            if self._frames_seen == 1:
-                # ffplay maps its window on the first decoded frame and activates itself;
-                # take activation back once it has, or the next click is lost
-                for delay in (800, 2000):
-                    self.root.after(delay, self._raise_controls)
             self.times.append(time.time())
             self._last_frame_time = time.time()
-            try:
-                self.player.stdin.write(payload)
-                self.player.stdin.flush()
-            except Exception as e:
-                self._log("writer: %s" % type(e).__name__)
-                return
+            if player is None:
+                continue                 # preview closed; the frame is not shown
+            if self._write_player(player, payload):
+                last_write = time.time()
+                self._player_written += 1
+                if self._player_written == 1:
+                    # ffplay maps its window on the first decoded frame and activates
+                    # itself; take activation back once it has, or the next click is lost
+                    for delay in (800, 2000):
+                        self.root.after(delay, self._raise_controls)
+
+    def _write_player(self, player, data):
+        """Write to ffplay; False if it has gone (its window was closed)."""
+        try:
+            player.stdin.write(data)
+            player.stdin.flush()
+            return True
+        except (BrokenPipeError, ValueError, OSError):
+            return False                 # _check_player notices the exit and reacts
 
     def _watchdog(self):
         while self.running:
@@ -1427,10 +1526,7 @@ class App:
         self.running = False
         if self._rec:
             self._rec.close()
-        try:
-            self.player.kill()
-        except Exception:
-            pass
+        self._stop_player(wait=0.5)
         cam = self.cam
         if cam is not None:
             if self.lock.acquire(timeout=3.0):
