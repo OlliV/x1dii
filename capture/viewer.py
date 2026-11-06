@@ -158,7 +158,7 @@ class App:
         self.lock = threading.Lock()            # serialises camera commands
         self.payloads = collections.deque(maxlen=QUEUE_MAX)
         self.payloads_lock = threading.Lock()
-        self.times = collections.deque(maxlen=32)
+        self.times = collections.deque(maxlen=128)   # >2 s at the full ~23 fps
         self.drops = 0
         self._frames_seen = 0
         self._last_frame_time = time.time()
@@ -1165,8 +1165,7 @@ class App:
             for payload in events:
                 self._on_event(payload)
             for frame in frames:
-                plen = int.from_bytes(frame[12:16], "little")
-                payload = frame[24:24 + plen]
+                payload = ls.payload(frame)
                 if not self._synced:
                     if b"\x00\x00\x01\x67" not in payload:
                         continue

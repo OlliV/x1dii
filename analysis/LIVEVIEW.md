@@ -15,7 +15,7 @@ a separate ffplay window); [`liveapp.py`](../capture/liveapp.py) is preview-only
 | Endpoint | `0x84` bulk IN |
 | Container | `LIVE` header + H.264 Annex-B payload |
 | Codec | H.264 High profile, 2756×2064 |
-| Rate | ~11–14 fps |
+| Rate | ~22.5 fps (same as Phocus) |
 | Start | one command — `op 1` / `0x0007` / first byte `0x0c` |
 | Stop | same command with all zero bytes |
 | Decode | `ffmpeg` / `ffplay` handle it directly |
@@ -29,11 +29,19 @@ off  size  field
  0    4    "LIVE"
  4    4    0x00000004          version / flags
  8    4    0x00000400          1024
-12    4    payload length       ← bytes following the 24-byte header
+12    4    packet length        ← the WHOLE packet, this 24-byte header included
 16    4    width  = 2756
 20    4    height = 2064
 24    n    payload
 ```
+
+**The length field covers the header too.** One bulk transfer on `0x84` is exactly one
+packet, and its size equals this field — confirmed on all 1258 frames of Phocus's trace
+and on the camera (`len=32611`, field `32611`). It was long read as the payload length;
+that makes every packet look 24 bytes too long, so the parser swallowed the next packet's
+header and skipped that frame. Result: half the frames (11 fps instead of 22.5), each with
+24 junk bytes appended, and — because every P-frame is a reference frame — the decoder
+predicting from frames it never got, which smeared anything that moved. See §5b.
 
 The payload opens with a small sub-header containing the ASCII string `H264` at offset
 `0x20`, then the elementary stream begins with a normal Annex-B access unit:
@@ -59,6 +67,11 @@ Feeding these to a decoder corrupts it (`pps_id out of range`) and they contain 
 a client that waits for SPS silently starves. **Skip any frame with `width == 0` or
 `height == 0`.** This one filter was the difference between a stable preview and one that
 stalled or glitched every few seconds.
+
+*Caveat (2026-11-06):* these measurements were taken with the length-field bug above, so
+the "total/payload" figures are off by 24 bytes. With the parser fixed, an 8-second
+recording of 182 packets contained **no** zero-width packets. They may only appear in
+other states (stream start/stop, a menu open); the filter stays because it is harmless.
 
 Frame sizes vary with scene complexity: ~20 KB for a flat/black frame, ~80 KB typical,
 ~500 KB for a detailed one.
@@ -140,22 +153,28 @@ ffmpeg -i /tmp/preview.h264 -vf "select=eq(n\,60)" -frames:v 1 frame.png
 
 ---
 
-## 5b. Preview quality is fixed — it cannot be raised
+## 5b. Preview quality — it was our parser, not the camera
 
-The preview is visibly blocky when still and smears badly under motion. That is the
-camera's encoder, not the transport: ~80 KB per 2756×2064 frame at ~11 fps is roughly
-**7 Mbit/s**, which is low for 5.7 megapixels.
+**Retracted:** this section used to say the preview quality is a firmware constant and that
+Phocus shows the same stream. Phocus gets the same bytes per frame but **twice the frames**:
 
-Two plausible levers were tried and neither moves it:
+| | fps | per frame (median) | bitrate |
+|---|---|---|---|
+| Phocus (`trace-liveview-2064.log`) | 22.6 | 65 KB | 11.9 Mbit/s |
+| tether app, before the fix | 11.3 | ~72 KB | 6.7 Mbit/s |
+| tether app, after the fix | 22.5 | ~65 KB | ~12 Mbit/s |
 
-| attempt | result |
-|---|---|
-| `0x0047` (range 2000–10000, reads 5000 — looked like a bitrate) | write accepted, frame size unchanged: 82309 → 82386 bytes |
-| `0x0051` LiveVideoMode, all 14 values | ack `0x0d`, resolution and frame size unchanged |
+The camera was always sending 22.5 fps; the length-field bug (§2) threw every other frame
+away. All P-frames carry `nal_ref_idc = 2`, so the skipped frames were references:
+decoding the old parser's frames against the full stream gives 44–50 dB PSNR even on a
+still scene (identical frames would be lossless), and the error grows with motion until
+the next IDR (~30 frames). ffmpeg reports no error or warning for this - the gaps are
+filled silently - which is why it went unnoticed.
 
-So the preview quality is a firmware constant. Nothing host-side can improve it, and
-Phocus shows the same stream. In dim scenes the body also slows its preview exposure,
-which adds real motion blur on top of the compression.
+The two levers tried earlier still do nothing: `0x0047` (2000–10000, reads 5000) leaves the
+frame size unchanged, and every `0x0051` LiveVideoMode value is refused with ack `0x0d`.
+`tools/liveview_rate.py` measures frame rate and bitrate per read strategy if this needs
+re-checking; one 256 KB read at a time already reaches the full rate.
 
 ### Parsing, in one place
 
@@ -183,6 +202,5 @@ clears the last one.
 
 ## 6. Rough edges
 
-* **~11 fps.** Phocus reaches ~27. Keeping more reads outstanding, or decoupling read from
-  decode with threads, is the way to close the gap.
+* ~~**~11 fps.**~~ Fixed: that was the length-field bug in §2, not read throughput.
 * **Read and decode share a thread**, so a slow decode back-pressures the stream.

@@ -24,6 +24,27 @@ SEQUENCE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "session_sequence.json")
 FIRST_LIVE = 1793860712.8            # timestamp of the first LIVE frame in the trace
 
+# A LIVE packet: "LIVE", u32 4, u32 1024, u32 LENGTH, u32 width, u32 height, payload.
+# LENGTH is the whole packet *including* this 24-byte header - one bulk transfer is one
+# packet, and its size equals LENGTH (checked on 1258 frames in Phocus's trace and on the
+# live camera). Reading it as the payload length, as this code once did, makes every
+# packet look 24 bytes longer than it is: the parser then eats the next packet's header,
+# skips that frame entirely, and hands the decoder half the frames with junk appended -
+# 11 fps of smeared motion where the camera sends 22.
+LIVE_HEADER = 24
+LIVE_MAX = 1 << 23
+
+
+def _live_length(buf, i):
+    """Total length of the LIVE packet at buf[i], or None if the field is implausible."""
+    total = int.from_bytes(buf[i + 12:i + 16], "little")
+    return total if LIVE_HEADER < total <= LIVE_MAX else None
+
+
+def payload(frame):
+    """The H.264 bytes of a complete LIVE packet."""
+    return frame[LIVE_HEADER:]
+
 
 def load_sequence(path=None):
     """The commands Phocus sends before live view starts, as (op, code, value).
@@ -80,16 +101,16 @@ def stream_parse(buf):
             events.append(buf[i + 5:end])
             i = end
         elif buf.startswith(b"LIVE", i):
-            if n - i < 24:
+            if n - i < LIVE_HEADER:
                 break
-            plen = int.from_bytes(buf[i + 12:i + 16], "little")
-            if plen <= 0 or plen > (1 << 22):
+            total = _live_length(buf, i)
+            if total is None:
                 i += 4                    # bad length: resync past this magic
                 continue
-            if n - i < 24 + plen:
+            if n - i < total:
                 break
-            frames.append(buf[i:i + 24 + plen])
-            i += 24 + plen
+            frames.append(buf[i:i + total])
+            i += total
         else:
             # Not at a packet: jump to the next header rather than stepping a byte at a
             # time. Anything else on the channel - a stray file transfer is megabytes -
@@ -122,15 +143,15 @@ def frames_from(buf):
             return out, b""
         if i:
             buf = buf[i:]
-        if len(buf) < 24:
+        if len(buf) < LIVE_HEADER:
             return out, buf
-        plen = int.from_bytes(buf[12:16], "little")
-        if plen <= 0 or plen > (1 << 22):
+        total = _live_length(buf, 0)
+        if total is None:
             buf = buf[4:]                     # bad length: resync past this magic
             continue
-        if len(buf) < 24 + plen:
+        if len(buf) < total:
             return out, buf
-        frame, buf = buf[:24 + plen], buf[24 + plen:]
+        frame, buf = buf[:total], buf[total:]
         w = int.from_bytes(frame[16:20], "little")
         h = int.from_bytes(frame[20:24], "little")
         if w and h:

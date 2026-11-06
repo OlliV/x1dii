@@ -13,12 +13,40 @@ from lib import hbctl, liveview  # noqa: E402
 
 
 def live_frame(payload, w=640, h=480):
-    return (b"LIVE" + bytes(8) + len(payload).to_bytes(4, "little")
+    """A LIVE packet as the camera sends it: the length field covers the whole packet."""
+    total = liveview.LIVE_HEADER + len(payload)
+    return (b"LIVE" + bytes(8) + total.to_bytes(4, "little")
             + w.to_bytes(4, "little") + h.to_bytes(4, "little") + payload)
 
 
 def event(body):
     return hbctl.HDR_IN + bytes([len(body)]) + body
+
+
+class LengthFieldTest(unittest.TestCase):
+    """The length field is the total packet length - the bug that halved the frame rate."""
+
+    def test_back_to_back_packets_all_survive(self):
+        frames = [live_frame(bytes([i]) * (100 + i)) for i in range(10)]
+        got, _ = liveview.frames_from(b"".join(frames))
+        self.assertEqual(got, frames)
+        _, events, _ = liveview.stream_parse(b"".join(frames))
+        self.assertEqual(liveview.stream_parse(b"".join(frames))[0], frames)
+        self.assertEqual(events, [])
+
+    def test_payload_has_no_trailing_header_bytes(self):
+        f = live_frame(b"\x00\x00\x00\x01\x67sps")
+        self.assertEqual(liveview.payload(f), b"\x00\x00\x00\x01\x67sps")
+
+    def test_real_header_from_the_camera(self):
+        # first 24 bytes of a 32611-byte packet read from the X1D II
+        hdr = (b"LIVE" + (4).to_bytes(4, "little") + (1024).to_bytes(4, "little")
+               + (32611).to_bytes(4, "little") + (2756).to_bytes(4, "little")
+               + (2064).to_bytes(4, "little"))
+        packet = hdr + bytes(32611 - 24)
+        got, rest = liveview.frames_from(packet + packet)
+        self.assertEqual(got, [packet, packet])
+        self.assertEqual(rest, b"")
 
 
 class StreamParseTest(unittest.TestCase):

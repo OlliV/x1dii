@@ -55,8 +55,7 @@ def main():
                     pass
                 new, buf = ls.frames_from(buf)
                 for f in new:
-                    plen = int.from_bytes(f[12:16], "little")
-                    payload = f[24:24 + plen]
+                    payload = ls.payload(f)
                     if not synced:
                         if b"\x00\x00\x01\x67" not in payload:
                             continue
