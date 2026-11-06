@@ -82,6 +82,24 @@ else
     exit 1
 fi
 
+# ---- 4b. vendor Pillow (the captures gallery decodes and resizes with it). Its compiled
+# modules are built for one Python version, so it must come from the same Python as the
+# bundle runs - the build Python, else the repo's .venv when that is the same version.
+PIL_PARENT=$("$PYTHON" -c 'import PIL,os;print(os.path.dirname(os.path.dirname(PIL.__file__)))' 2>/dev/null || true)
+if [ -z "$PIL_PARENT" ] && [ -x "$ROOT/.venv/bin/python" ]; then
+    want=$("$PYTHON" -c 'import sys;print(sys.version_info[:2])')
+    have=$("$ROOT/.venv/bin/python" -c 'import sys;print(sys.version_info[:2])')
+    [ "$want" = "$have" ] && PIL_PARENT=$("$ROOT/.venv/bin/python" -c 'import PIL,os;print(os.path.dirname(os.path.dirname(PIL.__file__)))' 2>/dev/null || true)
+fi
+if [ -n "$PIL_PARENT" ] && [ -d "$PIL_PARENT/PIL" ]; then
+    cp -R "$PIL_PARENT/PIL" "$RES/vendor/PIL"
+    find "$RES/vendor/PIL" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+    say "pillow:  vendored from $PIL_PARENT"
+else
+    echo "error: Pillow not found. Install it with: $PYTHON -m pip install pillow" >&2
+    exit 1
+fi
+
 # ---- 5. vendor libusb (so the app does not depend on Homebrew's loader paths)
 LIBUSB=""
 for cand in /opt/homebrew/lib/libusb-1.0.dylib /usr/local/lib/libusb-1.0.dylib \

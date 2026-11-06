@@ -46,6 +46,7 @@ from lib import hbctl              # noqa: E402
 from lib import liveview as ls     # noqa: E402
 from lib import params             # noqa: E402
 import widgets as ui                # noqa: E402
+import gallery                      # noqa: E402
 
 import usb.core                    # noqa: E402  must come after hbctl
 
@@ -76,6 +77,19 @@ CODE_BATTERY = 0x002f
 STACK_FRAMES = (2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30)
 STEP_NAMES = ("Extra small", "Small", "Medium", "Large", "Extra large")
 DIR_NAMES = ("Towards infinity", "Towards near", "Symmetric")
+
+
+def _on_screen(root, geom):
+    """A remembered "WxH+X+Y", or None if it would open off the screen (a display that
+    has since been unplugged) or is not a geometry at all."""
+    m = re.match(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", geom or "")
+    if not m:
+        return None
+    w, h, x, y = (int(v) for v in m.groups())
+    if x < 0 or y < 0 or x + 100 > root.winfo_screenwidth() \
+            or y + 100 > root.winfo_screenheight():
+        return None
+    return geom
 
 
 def shutter_text(v):
@@ -227,9 +241,11 @@ class App:
             # while the preview streams, and the cable release is the main workflow here
             self._live_pref = bool(cfg.get("live_view", False))
             self._save_pref_on = bool(cfg.get("save_copy", True))
+            self._gallery_geom = _on_screen(root, cfg.get("gallery_geometry"))
         except Exception:
             self._live_pref = False
             self._save_pref_on = True
+            self._gallery_geom = None
         if not self.download_dir:
             self.download_dir = self._default_capture_dir()
 
@@ -359,6 +375,13 @@ class App:
         # ffplay itself is started with live view (_ensure_player); only its place on
         # screen is worked out here, because that needs Tk and so the UI thread
         self._preview_geom = self._preview_geometry()
+        # with live view off, captures land in a four-up gallery in the preview's place
+        left, top, _ = self._preview_geom
+        room = (root.winfo_screenwidth() - left - 20, root.winfo_screenheight() - top - 30)
+        self.gallery = gallery.Gallery(root, (left, top) + room,
+                                       on_capture=self.on_capture, log=self._log,
+                                       geometry=self._gallery_geom,
+                                       on_geometry=self._gallery_moved)
         # launched from a terminal or Finder the app is not necessarily active, and Tk
         # 8.6.12 drops clicks until it is
         self.root.after(300, self._raise_controls)
@@ -599,8 +622,13 @@ class App:
                 text="camera busy..." if busy else self._live_hint_text())
         self.root.after(150, self._watch_busy)
 
+    def _gallery_moved(self, geom):
+        """The user moved or resized the captures window: open it there next time."""
+        self._gallery_geom = geom
+        self._save_pref()
+
     def _save_pref(self):
-        """Persist the three choices that survive a restart."""
+        """Persist the choices that survive a restart."""
         cfg = {}
         try:
             with open(self._cfg) as fh:
@@ -609,6 +637,8 @@ class App:
             pass
         cfg["live_view"] = bool(self.live_var.get())
         cfg["save_copy"] = bool(self.save_var.get())
+        if self._gallery_geom:
+            cfg["gallery_geometry"] = self._gallery_geom
         if self.download_dir:
             cfg["download_dir"] = self.download_dir
         try:
@@ -1357,12 +1387,11 @@ class App:
                 pass
 
     def _show_still(self, raw_path):
-        """Put the captured frame in the preview window.
+        """Show a captured frame: the JPEG embedded in the 3FR, resized to PNG for Tk.
 
-        ffplay is already the preview, so the still is handed to it the same way - the
-        embedded JPEG is pulled out of the 3FR, converted to PNG for Tk, and shown in a
-        window of its own. The live H.264 player is left alone so toggling live view back
-        on needs no restart.
+        With live view off it goes into the four-up gallery where the preview would be;
+        with live view on, into a still window of its own, leaving the H.264 player alone
+        so the preview needs no restart. Runs on a worker (decoding takes a moment).
         """
         try:
             with open(raw_path, "rb") as fh:
@@ -1375,6 +1404,16 @@ class App:
         if i < 0 or j <= i:
             self._log("still: no embedded JPEG in %s" % raw_path)
             return
+        stem = os.path.splitext(os.path.basename(raw_path))[0]
+        if not self._live_pref:
+            try:
+                image = gallery.decode(data[i:j + 2])
+            except Exception as e:
+                self._log("still: cannot decode %s (%s)" % (stem, e))
+                return
+            self._log("still: %d bytes of JPEG from %s -> gallery" % (j - i + 2, stem))
+            self.root.after(0, lambda: self.gallery.add(image, stem))
+            return
         cache = self._cache_dir()
         jpg = os.path.join(cache, "still.jpg")
         png = os.path.join(cache, "still.png")
@@ -1384,7 +1423,7 @@ class App:
             subprocess.run(["sips", "-s", "format", "png", "-Z", "1800", jpg,
                             "--out", png],
                            check=False, capture_output=True, timeout=20)
-            os.remove(jpg)               # 45 MB, needed only for the conversion
+            os.remove(jpg)               # needed only for the conversion
         except Exception as e:
             self._log("still: conversion failed %s" % e)
             return
