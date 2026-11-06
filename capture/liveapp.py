@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Live view window for the X1D II, with no Phocus involved.
 
-Starts the camera with the recorded connect sequence, keeps the `op 4` poll alive
-(the camera stops streaming without it), then pipes the H.264 payload of every LIVE
-frame into ffplay, which owns the window and does the decoding.
+Starts live view, then pipes the H.264 payload of every LIVE frame into ffplay, which
+owns the window and does the decoding.
 
   python3 liveapp.py [--seconds N] [--record out.h264]
 
 Live view is one command — `op 1` / code 0x0007 / first byte 0x0c — and all zeros stops
 it. No handshake and no polling; the camera streams at ~14 fps on its own.
 """
+import os
 import subprocess
 import sys
 import time
@@ -30,9 +30,7 @@ def main():
 
     cam = hbctl.Camera(timeout=800)
     try:
-        # Live view is a single command: op 1 / 0x0007 / first byte 0x0c.
-        # All zeros stops it. No handshake, no polling, no descriptors needed.
-        r = cam.call(hbctl.OP_CMD, 0x0007, bytes([0x0C]) + bytes(9))
+        r = cam.start_live()
         print("live view started (ack %s); opening window"
               % (r[1].hex(" ") if r else "none"), flush=True)
 
@@ -44,6 +42,7 @@ def main():
         rec = open(record, "wb") if record else None
         buf = b""
         frames = 0
+        reported = 0
         bad = 0
         synced = False          # wait for an SPS so the decoder starts clean
         t0 = time.time()
@@ -71,7 +70,8 @@ def main():
                         bad += 1
                         break
                     frames += 1
-                if frames and frames % 50 == 0 and frames % 50 == 0:
+                if frames - reported >= 50:
+                    reported = frames
                     el = time.time() - t0
                     print("  %d frames  %.1f fps" % (frames, frames / el), flush=True)
         except KeyboardInterrupt:
@@ -85,7 +85,7 @@ def main():
                 rec.close()
                 print("recorded to %s" % record)
             try:
-                cam.call(hbctl.OP_CMD, 0x0007, bytes(10), retries=0)   # stop live view
+                cam.stop_live()
             except Exception:
                 pass
             try:

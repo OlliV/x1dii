@@ -8,8 +8,8 @@
 
 Nothing here talks to the camera except `drain`, which takes a Camera from hbctl.
 """
+import json
 import os
-import sys
 import re
 import time
 
@@ -32,20 +32,20 @@ def load_sequence(path=None):
     and falls back to decoding the trace when run from a checkout that has it.
     """
     if path is None and os.path.exists(SEQUENCE):
-        import json
         with open(SEQUENCE) as fh:
             return [(op, code, bytes.fromhex(val)) for op, code, val in json.load(fh)]
     path = path or TRACE
     seq = []
-    for line in open(path, errors="replace"):
-        m = re.search(r"([\d.]+)\s+-> data:(04 00 08 05 .*)$", line.strip())
-        if not m:
-            continue
-        if float(m.group(1)) > FIRST_LIVE:
-            break
-        b = [int(x, 16) for x in m.group(2).split()]
-        payload = bytes(b[5:5 + b[4]])
-        seq.append((payload[2], int.from_bytes(payload[3:5], "little"), payload[5:]))
+    with open(path, errors="replace") as fh:
+        for line in fh:
+            m = re.search(r"([\d.]+)\s+-> data:(04 00 08 05 .*)$", line.strip())
+            if not m:
+                continue
+            if float(m.group(1)) > FIRST_LIVE:
+                break
+            b = [int(x, 16) for x in m.group(2).split()]
+            payload = bytes(b[5:5 + b[4]])
+            seq.append((payload[2], int.from_bytes(payload[3:5], "little"), payload[5:]))
     return seq
 
 
@@ -54,7 +54,7 @@ def drain(cam, ms=200):
     end = time.time() + ms / 1000.0
     while time.time() < end:
         try:
-            if not cam.dev.read(0x84, 1 << 20, timeout=60):
+            if not cam.dev.read(hbctl.EP_DATA, 1 << 20, timeout=60):
                 break
         except Exception:
             break
@@ -70,7 +70,7 @@ def stream_parse(buf):
     """
     frames, events = [], []
     while buf:
-        if buf.startswith(b"\x03\x00\x05\x08"):
+        if buf.startswith(hbctl.HDR_IN):
             if len(buf) < 5:
                 break
             n = buf[4]

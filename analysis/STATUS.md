@@ -53,8 +53,10 @@ the big untouched one, and §6 sketches a tiled review of recent captures (tile 
 Environment notes:
 * camera must not be held by Phocus (`claim_interface(3)` fails while it runs);
 * `libusb-package` + `pyusb` are installed under `/tmp/pylibs` (may be gone after reboot);
-* pyusb caches one libusb context per process — `hbctl.reset_usb()` drops it, which is what
-  makes reconnection work after the camera re-enumerates;
+* reconnection needs no special handling: the libusb1 backend re-enumerates the bus on every
+  `usb.core.find()`. Do not try to reset pyusb's module globals — that invalidates every live
+  `usb.core.Device`, and their finalisers then crash in `libusb_unref_device`
+  (EXC_ARM_DA_ALIGN). The old `hbctl.reset_usb()` that did this has been removed;
 * all firmware extraction artefacts are reproduced by `cim_unpack.py`;
 * the old "Phocus x86_64 offsets" note is obsolete — the protocol was recovered by
   capturing real traffic, see `PROTOCOL.md` §0 and §12.

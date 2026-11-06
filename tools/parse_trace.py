@@ -160,11 +160,6 @@ def main():
                 else:
                     seq, status, data = decode_reply(f)
                     out.append(("REP", seq, None, None, None, status, data))
-    # pair replies with requests
-    reqs = {}
-    for row in out:
-        if row[0] == "REQ":
-            reqs[row[1]] = row
     print("%-6s %-6s %-10s %-6s %-28s %s" % ("seq", "dir", "op", "code", "name", "value"))
     for kind, seq, op, code, value, status, data in out:
         if kind == "REQ":
@@ -174,8 +169,6 @@ def main():
                 seq, "->", OPS.get(op, op), code if code is not None else 0, nm, vs))
         else:
             t = STATUS_TYPE.get(status, "%02x" % status) if status is not None else "?"
-            req = reqs.get(seq)
-            tag = req[2] if req else -1
             print("%-6d %-6s %-10s %-6s %-28s %s" % (
                 seq, "<-", t, "", "", decode_value(status, data) if status is not None else ""))
 

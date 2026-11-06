@@ -10,7 +10,6 @@ Usage:  python3 watch_events.py [-f /tmp/libusb_trace.log] [--tail N]
 """
 import argparse
 import re
-import sys
 
 REPLY = re.compile(r"<- data:(03 00 05 08 .*)$")
 REQ = re.compile(r"-> data:(04 00 08 05 .*)$")

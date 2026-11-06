@@ -103,7 +103,6 @@ def zip_entries(plain, start, end):
     o = plain.rfind(b"PK\x05\x06", start, end)
     if o < 0:
         return
-    cd_off = struct.unpack_from("<I", plain, o + 16)[0]
     cd = o - struct.unpack_from("<I", plain, o + 12)[0]
     p = cd
     while plain[p : p + 4] == b"PK\x01\x02":
@@ -129,7 +128,6 @@ def zip_entries(plain, start, end):
 def sdat_to_img(dat, transfer):
     """Convert Android sparse block data + transfer list into a raw image."""
     lines = [l.strip() for l in transfer.decode().split("\n") if l.strip()]
-    total = 0
     img = bytearray()
     pos = 0
     for line in lines[3:]:

@@ -26,9 +26,9 @@ stays usable from the keyboard.
 Camera I/O never happens on the UI thread.
 """
 import collections
+import json
 import os
 import re
-import struct
 import signal
 import subprocess
 import sys
@@ -36,11 +36,13 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+from tkinter import filedialog
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from lib import hbctl              # noqa: E402
 from lib import liveview as ls     # noqa: E402
+from lib import params             # noqa: E402
 
 import usb.core                    # noqa: E402  must come after hbctl
 
@@ -55,16 +57,27 @@ DEFAULT_CAPTURE_DIR = "~/Pictures/X1D Tether"
 # shutter describe alone answers in several frames, so one or two misses are normal.
 SESSION_TOLERANCE = 4
 
+# Exposure controls: (label, value code, name-table code). The name table maps the
+# camera's raw values to the text the body shows; ISO has none and is decoded instead.
+CONTROLS = (("Aperture", 0x0008, 0x003e),
+            ("Shutter", 0x0009, 0x003f),
+            ("ISO", 0x000a, None))
+CODE_MODE = 0x0003
+CODE_BATTERY = 0x002f
+
+# focus stack panel: the camera's own named scale, and practical frame counts
+STACK_FRAMES = (2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30)
+STEP_NAMES = ("Extra small", "Small", "Medium", "Large", "Extra large")
+DIR_NAMES = ("Towards infinity", "Towards near", "Symmetric")
+
 # Exposure mode as reported by 0x0003. The body owns this and the host cannot set it
 # (a write is refused with ack 0x0d), so these are only ever read.
 # Mapped from the dial by observation - see analysis/README.md:
 #   9 = full auto (square), 3 = P, 2 = S, 1 = A, 0 = M, 8 = Mq, 10 = video
 # A C slot reports whatever mode it is programmed to (so a C set to A reads 1), which
 # means the greying rules follow it automatically.
-# focus stack panel: the camera's own named scale, and practical frame counts
-STACK_FRAMES = (2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30)
-STEP_NAMES = ("Extra small", "Small", "Medium", "Large", "Extra large")
-DIR_NAMES = ("Towards infinity", "Towards near", "Symmetric")
+MODE_MQ = 8                 # M without live view
+MODE_VIDEO = 10             # no tether preview at all
 
 MODE_NAMES = {9: "\u25a1", 3: "P", 2: "S", 1: "A", 0: "M", 8: "Mq", 10: "Video"}
 
@@ -88,49 +101,6 @@ MODE_ALLOWS = {
 }
 
 
-def descriptor_list(desc):
-    """'LR11,a,b,...' -> ['a','b',...]"""
-    if not desc:
-        return []
-    m = re.match(r"^L[A-Za-z](\d+),(.*)$", desc)
-    return m.group(2).split(",") if m else []
-
-
-def name_table(desc):
-    """'LS34,4\\t4.8' -> ['4','4.8']  (the leading number is string length)"""
-    if not desc:
-        return []
-    m = re.match(r"^LS\d+,(.*)$", desc)
-    return m.group(1).split("\t") if m else []
-
-
-def rational(name):
-    """Shutter/aperture values are rationals: (numerator << 16) | denominator."""
-    try:
-        if "/" in name:
-            a, b = name.split("/")
-            return (int(a) << 16) | int(b)
-        if ":" in name:
-            a, b = name.split(":")
-            return ((int(a) * 100 + int(b)) << 16) | 100
-        if "." in name:
-            whole, frac = name.split(".")
-            num = int(whole) * 10 ** len(frac) + int(frac)
-            return (num << 16) | 10 ** len(frac)
-        return (int(name) << 16) | 1
-    except Exception:
-        return None
-
-
-def _same(a, b):
-    if isinstance(a, str) and isinstance(b, str) and a == b:
-        return True
-    try:
-        return abs(float(a) - float(b)) < 1e-6
-    except (TypeError, ValueError):
-        return str(a) == str(b)
-
-
 def _mix(a, b, t):
     """Blend two #rrggbb colours by t (0 = a, 1 = b).
 
@@ -143,6 +113,40 @@ def _mix(a, b, t):
     cb = [int(b[i:i + 2], 16) for i in (0, 2, 4)]
     return "#%02x%02x%02x" % tuple(
         max(0, min(255, int(round(x + (y - x) * t)))) for x, y in zip(ca, cb))
+
+
+def status_text(now, mode, *, disconnected, live, session_ok, live_refused,
+                refused_since, recover_until, last_frame):
+    """The one-line connection state shown in the status row.
+
+    Pure so it can be read (and tested) apart from the threads that feed it: `now` and
+    the three timestamps are time.time() values, `mode` is the 0x0003 exposure mode.
+    """
+    if disconnected:
+        return "camera disconnected - waiting"
+    if not live:
+        # no preview is deliberate here: the body shutter only works in a session that
+        # never started live view
+        if session_ok:
+            return "cable release armed - press the body shutter"
+        return "arming cable release (session) ..."
+    if live_refused:
+        held = now - refused_since if refused_since else 0.0
+        if mode == MODE_MQ:
+            return "Mq - no live view by design"
+        if mode == MODE_VIDEO:
+            # video mode does not tether a preview at all - Phocus cannot either
+            return "video mode - no tether preview"
+        if held > 20:
+            return "refused for %ds - likely too hot, let it cool" % int(held)
+        return "refused live view - wake the screen / exit menus"
+    if now < recover_until:
+        return "recovering (camera writing)"
+    if now - last_frame > 6:
+        if mode == MODE_MQ:
+            return "no preview - Mq has no live view by design"
+        return "no preview - check the camera body"
+    return "live"
 
 
 class App:
@@ -172,16 +176,24 @@ class App:
         self.session_ok = False
         self.download_dir = None
         self._saved_path = None
-        self._combo_code = {"Aperture": 0x0008, "Shutter": 0x0009, "ISO": 0x000a}
+        self._vars = {}                         # control label -> tk.StringVar
+        self._menus = {}                        # control label -> tk.OptionMenu
+        self._values = {}                       # control label -> {shown text: raw value}
+        self._codes = {label: code for label, code, _ in CONTROLS}
         self._applied = {}
+        self._capture_enabled = True
+        self._release_hovered = False
+        self._cache_path = None
+        self._still_win = None
+        self._last_pkt_log = 0.0
         self._cfg = os.path.expanduser("~/.x1d_viewer.json")
         self._log_path = self._make_log_path()
         self._logf = open(self._log_path, "a", buffering=1)
         self._log("--- viewer start ---")
 
         try:
-            import json
-            cfg = json.load(open(self._cfg))
+            with open(self._cfg) as fh:
+                cfg = json.load(fh)
             saved = cfg.get("download_dir")
             if saved and os.path.isdir(saved):
                 self.download_dir = saved
@@ -204,18 +216,14 @@ class App:
 
         self._make_release(bar)
 
-        self._make_control(bar, "Aperture", 0x0008, 0x003e)
-        self._make_control(bar, "Shutter", 0x0009, 0x003f)
-        self._make_control(bar, "ISO", 0x000a, None)
+        for label, _, _ in CONTROLS:
+            self._make_control(bar, label)
 
         save = tk.Frame(bar, bg="#111")
         save.pack(side="left", padx=(18, 4))
         self.save_var = tk.BooleanVar(value=self._save_pref_on)
-        tk.Checkbutton(save, text=" Save a copy", variable=self.save_var,
-                       bg="#111", fg="#ccc", selectcolor="#4a4a4a",
-                       activebackground="#111", activeforeground="#fff",
-                       highlightthickness=0, font=("Helvetica", 11),
-                       command=self._toggle_save).pack(anchor="w")
+        self._check(save, " Save a copy", self.save_var,
+                    self._toggle_save).pack(anchor="w")
         self._flat_button(save, "folder…", self._pick_dir).pack(anchor="w", pady=(2, 0))
         self.dir_label = tk.Label(save, bg="#111", fg="#777", font=("Menlo", 9),
                                   text=(os.path.basename(self.download_dir)
@@ -229,29 +237,21 @@ class App:
         view = tk.Frame(bar, bg="#111")
         view.pack(side="left", padx=(18, 4))
         self.live_var = tk.BooleanVar(value=self._live_pref)
-        tk.Checkbutton(view, text=" Live view", variable=self.live_var,
-                       bg="#111", fg="#ccc", selectcolor="#4a4a4a",
-                       activebackground="#111", activeforeground="#fff",
-                       highlightthickness=0, font=("Helvetica", 11),
-                       command=self._toggle_live).pack(anchor="w")
+        self._check(view, " Live view", self.live_var,
+                    self._toggle_live).pack(anchor="w")
         self.live_hint = tk.Label(view, bg="#111", fg="#777", font=("Menlo", 9),
                                   text=self._live_hint_text(), anchor="w", width=22)
         self.live_hint.pack(anchor="w", pady=(2, 0))
 
-        # status row: fixed-width message on the left so changing text cannot resize the
-        # window, battery indicator pinned right
         # ---- focus stack panel: collapsed by default, and when open the CAPTURE button
         # itself runs the stack, so there is one primary action rather than two buttons
         stack = tk.Frame(root, bg="#1a1a1a")
         stack.grid(row=1, column=0, sticky="we", padx=8, pady=(0, 8))
 
         self.stack_on = tk.BooleanVar(value=False)
-        self.stack_toggle = tk.Checkbutton(
-            stack, text="  Focus stack", variable=self.stack_on,
-            command=self._toggle_stack, bg="#1a1a1a", fg="#ccc",
-            selectcolor="#4a4a4a", activebackground="#1a1a1a",
-            activeforeground="#fff", highlightthickness=0,
-            font=("Helvetica", 12, "bold"))
+        self.stack_toggle = self._check(stack, "  Focus stack", self.stack_on,
+                                        self._toggle_stack, bg="#1a1a1a",
+                                        font=("Helvetica", 12, "bold"))
         self.stack_toggle.pack(side="left", padx=(8, 10), pady=9)
 
         self.stack_body = tk.Frame(stack, bg="#1a1a1a")
@@ -284,6 +284,8 @@ class App:
         self._style_menu(self.om_dir, 16)
         self.om_dir.pack()
 
+        # status row: fixed-width message on the left so changing text cannot resize the
+        # window, battery indicator pinned right
         row = tk.Frame(root, bg="#111")
         row.grid(row=2, column=0, sticky="we", padx=10, pady=(0, 8))
         row.columnconfigure(0, weight=1)
@@ -318,14 +320,14 @@ class App:
                 signal.signal(sig, lambda *_: self.root.after(0, self.on_close))
             except Exception:
                 pass
-        # diagnostic: log every click that reaches the app, with the widget it hit, so a
-        # dead button can be told apart from a click that never arrived
         # keep the controls above the preview window: ffplay is a separate process and
         # can otherwise sit on top, swallowing every click meant for these controls
         try:
             root.attributes("-topmost", True)
         except Exception:
             pass
+        # diagnostic: log every click that reaches the app, with the widget it hit, so a
+        # dead button can be told apart from a click that never arrived
         root.bind_all("<Button-1>",
                       lambda e: self._log("click %r at %d,%d on %s"
                                           % (e.num, e.x_root, e.y_root,
@@ -360,7 +362,15 @@ class App:
 
     # ---- ui helpers
 
-    def _make_control(self, parent, label, code, name_code):
+    def _check(self, parent, text, variable, command, bg="#111",
+               font=("Helvetica", 11)):
+        """A checkbox styled for the dark panel."""
+        return tk.Checkbutton(parent, text=text, variable=variable, command=command,
+                              bg=bg, fg="#ccc", selectcolor="#4a4a4a",
+                              activebackground=bg, activeforeground="#fff",
+                              highlightthickness=0, font=font)
+
+    def _make_control(self, parent, label):
         box = tk.Frame(parent, bg="#111")
         box.pack(side="left", padx=6)
         tk.Label(box, text=label, bg="#111", fg="#888",
@@ -369,16 +379,12 @@ class App:
         # <<ComboboxSelected>> event until focus moves or Return is pressed, so picking
         # a value appeared to do nothing. A menubutton's command fires on the click.
         var = tk.StringVar(value="")
-        om = tk.OptionMenu(box, var, "",
-                           command=lambda _v, c=code, l=label: self._set_param(c, l))
-        om.configure(anchor="w", width=12, highlightthickness=0, bd=1, relief="raised",
-                     bg="#2d2d2d", fg="#eeeeee", activebackground="#3d3d3d",
-                     activeforeground="#ffffff", font=("Helvetica", 11))
-        om["menu"].configure(bg="#2d2d2d", fg="#eeeeee")
+        om = tk.OptionMenu(box, var, "", command=lambda _v: self._set_param(label))
+        self._style_menu(om, 12)
         om.pack()
-        setattr(self, "var_" + label.lower(), var)
-        setattr(self, "om_" + label.lower(), om)
-        setattr(self, "vals_" + label.lower(), {})
+        self._vars[label] = var
+        self._menus[label] = om
+        self._values[label] = {}
 
     # ---- the release button
 
@@ -402,8 +408,6 @@ class App:
             w.bind("<Button-1>", self._release_click)
             w.bind("<Enter>", lambda e: self._release_hover(True))
             w.bind("<Leave>", lambda e: self._release_hover(False))
-        self._capture_enabled = True
-        self._release_hovered = False
         self._draw_release()
 
     def _release_click(self, _event=None):
@@ -425,10 +429,10 @@ class App:
     def _draw_release(self):
         c = self.capture_canvas
         c.delete("all")
-        on = getattr(self, "_capture_enabled", True)
-        hot = getattr(self, "_release_hovered", False) and on
+        on = self._capture_enabled
+        hot = self._release_hovered and on
         core = BTN_ORANGE if on else "#6b6b6b"
-        if hot and on:
+        if hot:
             core = _mix(core, "#ffffff", 0.10)
         cx = cy = 35.0
         r_out, r_well, r_core = 33.0, 21.5, 17.0
@@ -468,8 +472,7 @@ class App:
                           fill=_mix(edge, lite, t ** 0.9), outline="")
 
         self.capture_label.configure(
-            fg=(BTN_ORANGE if (hot and on) else "#9e9e9e" if not on else "#d6d6d6"))
-
+            fg=(BTN_ORANGE if hot else "#d6d6d6" if on else "#9e9e9e"))
 
     def _toggle_stack(self):
         """Enable the stack controls. Nothing is packed or unpacked and the capture
@@ -535,7 +538,6 @@ class App:
         return None
 
     def _pick_dir(self):
-        from tkinter import filedialog
         d = filedialog.askdirectory(title="Where should captures be saved?",
                                     initialdir=self.download_dir or os.path.expanduser("~"))
         self.root.lift()
@@ -565,20 +567,21 @@ class App:
 
     def _save_pref(self):
         """Persist the three choices that survive a restart."""
+        cfg = {}
         try:
-            import json
-            cfg = {}
-            try:
-                cfg = json.load(open(self._cfg))
-            except Exception:
-                pass
-            cfg["live_view"] = bool(self.live_var.get())
-            cfg["save_copy"] = bool(self.save_var.get())
-            if self.download_dir:
-                cfg["download_dir"] = self.download_dir
-            json.dump(cfg, open(self._cfg, "w"))
+            with open(self._cfg) as fh:
+                cfg = json.load(fh)
         except Exception:
             pass
+        cfg["live_view"] = bool(self.live_var.get())
+        cfg["save_copy"] = bool(self.save_var.get())
+        if self.download_dir:
+            cfg["download_dir"] = self.download_dir
+        try:
+            with open(self._cfg, "w") as fh:
+                json.dump(cfg, fh)
+        except Exception as e:
+            self._log("saving preferences failed: %s" % e)
 
     def _toggle_live(self):
         """Swap between previewing and arming the cable release.
@@ -639,7 +642,7 @@ class App:
             self.session_ok = len(failed) <= SESSION_TOLERANCE
             self._log("session established (live=%s), %d of %d commands unanswered"
                       % (self._live_pref, len(failed),
-                         getattr(self.cam, "last_session_sent", 0)))
+                         self.cam.last_session_sent))
             if not self.session_ok:
                 self._say("session incomplete (%d commands) - capture may not transfer"
                           % len(failed))
@@ -708,9 +711,9 @@ class App:
 
     def _start_live(self):
         with self.lock:
-            self.cam.call(hbctl.OP_CMD, 0x0007, bytes(10), retries=0)
+            self.cam.stop_live()
             time.sleep(0.4)
-            r = self.cam.call(hbctl.OP_CMD, 0x0007, bytes([0x0C]) + bytes(9))
+            r = self.cam.start_live()
         self._live_refused = bool(r and r[1] != b"\x00\x00\x00\x00")
         if self._live_refused:
             if not self._refused_since:
@@ -730,54 +733,28 @@ class App:
         if self.cam is None:
             return
         with self.lock:
-            for code, label, name_code in ((0x0008, "Aperture", 0x003e),
-                                           (0x0009, "Shutter", 0x003f),
-                                           (0x000a, "ISO", None)):
+            for label, code, name_code in CONTROLS:
                 try:
                     desc = self.cam.describe(code)
                     cur = self.cam.read(code)
                 except Exception:
                     continue
-                values, order = {}, []
                 if label == "ISO":
-                    m = re.match(r"^LF\d+,(.*)$", desc or "")
-                    for h in (m.group(1).split(",") if m else []):
-                        try:
-                            n = round(struct.unpack(
-                                ">d", bytes.fromhex(h.rjust(16, "0")))[0])
-                        except Exception:
-                            continue
-                        text = "Auto" if n == -1 else str(n)
-                        values[text] = n
-                        order.append(text)
+                    order, values = params.iso_choices(desc)
                 else:
-                    vals = descriptor_list(desc)
-                    names = name_table(self.cam.describe(name_code)) if name_code else []
-                    if names and len(names) == len(vals):
-                        order = list(names)
-                        values = dict(zip(order, vals))
-                    elif names:
-                        for n in names:
-                            if n in ("T", "B"):
-                                continue
-                            v = rational(n)
-                            if v is not None:
-                                order.append(n)
-                                values[n] = "r%x" % v
-                    else:
-                        order = list(vals)
-                        values = {v: v for v in vals}
-                om = getattr(self, "om_" + label.lower())
-                var = getattr(self, "var_" + label.lower())
+                    names = (params.name_table(self.cam.describe(name_code))
+                             if name_code else [])
+                    order, values = params.named_choices(desc, names)
+                om = self._menus[label]
+                var = self._vars[label]
                 menu = om["menu"]
                 menu.delete(0, "end")
                 for choice in order:
                     menu.add_command(label=choice,
-                                     command=lambda v=choice, l=label: self._choose(l, v))
-                setattr(self, "vals_" + label.lower(), values)
+                                     command=lambda v=choice, lb=label: self._choose(lb, v))
+                self._values[label] = values
                 if order:
-                    match = [k for k, v in values.items() if _same(v, cur)]
-                    var.set(match[0] if match else order[0])
+                    var.set(params.current_choice(order, values, cur))
                     om.configure(state="normal")
                 else:
                     var.set("n/a")
@@ -819,7 +796,7 @@ class App:
         self._set_enabled("Shutter", allow_sh)
 
     def _set_enabled(self, label, enabled):
-        om = getattr(self, "om_" + label.lower())
+        om = self._menus[label]
         cur = str(om.cget("state"))
         if enabled and cur in ("normal", "active"):
             return                      # 'active' means the pointer is over it
@@ -831,12 +808,13 @@ class App:
     def _choose(self, label, value):
         """OptionMenu callback: set the displayed value, then apply it."""
         self._log("choose %s = %r" % (label, value))
-        getattr(self, "var_" + label.lower()).set(value)
-        self._set_param(self._combo_code[label], label)
+        self._vars[label].set(value)
+        self._set_param(label)
 
-    def _set_param(self, code, label):
-        values = getattr(self, "vals_" + label.lower())
-        text = getattr(self, "var_" + label.lower()).get()
+    def _set_param(self, label):
+        code = self._codes[label]
+        values = self._values[label]
+        text = self._vars[label].get()
         if text not in values:
             return
         raw = values[text]
@@ -849,7 +827,7 @@ class App:
                 with self.lock:
                     ok, before, after, ack = self.cam.write(code, raw)
                 self._say("%s %s: %r -> %r%s" % (label, text, before, after,
-                                                  "" if ok else "   (NOT APPLIED)"))
+                                                 "" if ok else "   (NOT APPLIED)"))
             except Exception as e:
                 self._say("%s failed: %s" % (label, e))
         threading.Thread(target=run, daemon=True).start()
@@ -857,7 +835,7 @@ class App:
     # ---- capture
 
     def on_capture(self):
-        if not getattr(self, "_capture_enabled", True):
+        if not self._capture_enabled:
             return                   # a shot or a stack is already running
         if self.stack_on.get():
             self.on_stack()          # the panel is open, so CAPTURE means "run the stack"
@@ -904,7 +882,7 @@ class App:
                     finally:
                         self.downloading = False
                     self._log("capture: saved %s (%d bytes, expected %r)"
-                              % (dest, n, getattr(self.cam, "last_download_expected", None)))
+                              % (dest, n, self.cam.last_download_expected))
                     self._saved_path = dest if n else None
                 except Exception as e:
                     self._log("capture: download failed %s" % e)
@@ -950,7 +928,7 @@ class App:
                 # bracket silently becomes one frame - which is exactly what happened.
                 for attempt in range(4):
                     with self.lock:
-                        self.cam.call(hbctl.OP_CMD, 0x0007, bytes(10), retries=0)
+                        self.cam.stop_live()
                     quiet = time.time()
                     stopped = False
                     while time.time() - quiet < 1.5:
@@ -959,7 +937,8 @@ class App:
                         time.sleep(0.1)
                     else:
                         stopped = True
-                    self._log("stack: stop preview attempt %d, stopped=%s" % (attempt + 1, stopped))
+                    self._log("stack: stop preview attempt %d, stopped=%s"
+                              % (attempt + 1, stopped))
                     if stopped:
                         break
                 self.downloading = True          # the reader must not take 0x84
@@ -973,7 +952,7 @@ class App:
                 self._log("stack: %d/%d frames" % (len(got), frames))
                 if not got:
                     self._say("stack: no frames - camera busy, try again")
-                if len(got) >= frames:
+                elif len(got) >= frames:
                     self._say("stack: %d frames on card" % len(got))
                 else:
                     self._say("stack: %d/%d - lens limit reached?" % (len(got), frames))
@@ -1088,9 +1067,8 @@ class App:
         lands matters. ~/Library/Caches is the macOS location for data that may be
         deleted at any time, which is exactly what these are.
         """
-        cached = getattr(self, "_cache_path", None)
-        if cached:
-            return cached
+        if self._cache_path:
+            return self._cache_path
         for d in (os.path.expanduser("~/Library/Caches/X1D Tether"),
                   os.path.expanduser("~/Library/Logs/X1D Tether"),
                   tempfile.gettempdir()):
@@ -1122,7 +1100,7 @@ class App:
             with self.lock:
                 n = self.cam.download(token, dest)
             self._log("external capture %s (%d bytes, expected %r)"
-                      % (dest, n, getattr(self.cam, "last_download_expected", None)))
+                      % (dest, n, self.cam.last_download_expected))
             if not n:
                 self._say("camera shot 0x%04x - transfer refused" % token)
                 return
@@ -1151,7 +1129,8 @@ class App:
         on needs no restart.
         """
         try:
-            data = open(raw_path, "rb").read(48 << 20)
+            with open(raw_path, "rb") as fh:
+                data = fh.read(48 << 20)
         except Exception as e:
             self._log("still: cannot read %s (%s)" % (raw_path, e))
             return
@@ -1182,10 +1161,9 @@ class App:
         except Exception as e:
             self._log("still: Tk cannot load %s (%s)" % (png, e))
             return
-        win = getattr(self, "_still_win", None)
+        win = self._still_win
         try:
             if win is not None and win.winfo_exists():
-                win.configure()
                 win.children["img"].configure(image=img)
                 win.image = img
                 win.lift()
@@ -1217,10 +1195,10 @@ class App:
                 continue
             try:
                 with self.lock:
-                    self.cam.call(4, 0x0003, b"", retries=0)
-                    self.cam.call(4, 0x0002, b"", retries=0)
+                    self.cam.call(hbctl.OP_INDEXED, 0x0003, b"", retries=0)
+                    self.cam.call(hbctl.OP_INDEXED, 0x0002, b"", retries=0)
                     for v in (b"\x07\x00\x00\x00", b"\x08\x00\x00\x00"):
-                        self.cam.call(4, 0x0001, v, retries=0)
+                        self.cam.call(hbctl.OP_INDEXED, 0x0001, v, retries=0)
             except Exception:
                 pass
 
@@ -1254,7 +1232,7 @@ class App:
                 continue
             if time.time() - self._last_frame_time < 8:
                 continue
-            if self._mode in (8, 10):
+            if self._mode in (MODE_MQ, MODE_VIDEO):
                 continue          # Mq and video have no preview to restart
             self._log("watchdog: no frames for >8s, restarting live view")
             try:
@@ -1275,51 +1253,30 @@ class App:
             try:
                 if self.cam is not None:
                     with self.lock:
-                        batt = self.cam.read(0x002f)
-                        ap = self.cam.read(0x0008)
-                        sh = self.cam.read(0x0009)
-                        mode = self.cam.read(0x0003)
+                        batt = self.cam.read(CODE_BATTERY)
+                        ap = self.cam.read(self._codes["Aperture"])
+                        sh = self.cam.read(self._codes["Shutter"])
+                        mode = self.cam.read(CODE_MODE)
                         self._mode = mode
                     self.root.after(0, lambda m=mode, a=ap, s=sh:
                                     self._apply_mode_state(m, a, s))
             except Exception as e:
                 self._mark_lost("stats: %s" % type(e).__name__)
 
-            cutoff = time.time() - 2.0
-            fps = sum(1 for t in self.times if t >= cutoff) / 2.0
-            if self.disconnected:
-                state = "camera disconnected - waiting"
-            elif not self._live_pref:
-                # no preview is deliberate here: the body shutter only works in a
-                # session that never started live view
-                if self.session_ok:
-                    state = "cable release armed - press the body shutter"
-                else:
-                    state = "arming cable release (session) ..."
-            elif self._live_refused:
-                held = time.time() - self._refused_since if self._refused_since else 0.0
-                if mode == 8:
-                    state = "Mq - no live view by design"
-                elif mode == 10:
-                    # video mode does not tether a preview at all - Phocus cannot either
-                    state = "video mode - no tether preview"
-                elif held > 20:
-                    state = "refused for %ds - likely too hot, let it cool" % int(held)
-                else:
-                    state = "refused live view - wake the screen / exit menus"
-            elif time.time() < self._recover_until:
-                state = "recovering (camera writing)"
-            elif time.time() - self._last_frame_time > 6:
-                state = ("no preview - Mq has no live view by design"
-                         if mode == 8 else "no preview - check the camera body")
-            else:
-                state = "live"
+            now = time.time()
+            fps = sum(1 for t in self.times if t >= now - 2.0) / 2.0
+            state = status_text(
+                now, mode,
+                disconnected=self.disconnected, live=self._live_pref,
+                session_ok=self.session_ok, live_refused=self._live_refused,
+                refused_since=self._refused_since, recover_until=self._recover_until,
+                last_frame=self._last_frame_time)
 
-            if (self.cam is not None
-                    and time.time() - getattr(self, "_last_pkt_log", 0) > 20):
+            cam = self.cam
+            if cam is not None and time.time() - self._last_pkt_log > 20:
                 self._last_pkt_log = time.time()
-                self._log("packets: %s" % {hex(k): v for k, v in
-                                           getattr(self.cam, "pkt_stats", {}).items()})
+                self._log("packets: %s"
+                          % {hex(k): v for k, v in cam.pkt_stats.items()})
             text = state if not self._live_pref else "%.1f fps   %s" % (fps, state)
             name = MODE_NAMES.get(mode, "?")
             accent = MODE_ACCENT.get(mode, "#2b2b2b")
@@ -1383,7 +1340,7 @@ class App:
         try:
             if self.cam is not None:
                 with self.lock:
-                    self.cam.call(hbctl.OP_CMD, 0x0007, bytes(10), retries=0)
+                    self.cam.stop_live()
         except Exception:
             pass
         if self._rec:

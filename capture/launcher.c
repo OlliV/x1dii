@@ -10,15 +10,16 @@
  * the bundle, points pyusb at the bundled libusb, and execs the interpreter that was
  * chosen at build time.
  */
-#include <mach-o/dyld.h>
-#include <sys/sysctl.h>
 #include <errno.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
+#include <mach-o/dyld.h>
+#include <sys/stat.h>
+#include <sys/sysctl.h>
 
 #ifndef PYTHON
 #define PYTHON "/usr/bin/python3"
@@ -79,9 +80,9 @@ int main(int argc, char **argv)
     const char *home = getenv("HOME");
     if (home) {
         char dir[PATH_MAX], log[PATH_MAX];
-        snprintf(dir, sizeof dir, "%s/Library/Logs/X1D Tether", home);
+        snprintf(dir, sizeof(dir), "%s/Library/Logs/X1D Tether", home);
         (void)mkdir(dir, 0755);
-        snprintf(log, sizeof log, "%s/x1d-tether.err", dir);
+        snprintf(log, sizeof(log), "%s/x1d-tether.err", dir);
         (void)freopen(log, "a", stderr);
     }
 

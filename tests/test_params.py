@@ -1,0 +1,124 @@
+"""Tests for lib/params.py and the status line. No camera or display needed.
+
+    python3 -m unittest discover tests
+"""
+import os
+import struct
+import sys
+import unittest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from lib import params  # noqa: E402
+
+
+def lf(*values):
+    """Build an ISO-style 'LF<n>,<hex double>,...' descriptor."""
+    hexes = [struct.pack(">d", v).hex() for v in values]
+    return "LF%d,%s" % (len(hexes), ",".join(hexes))
+
+
+class DescriptorTest(unittest.TestCase):
+    def test_descriptor_list(self):
+        self.assertEqual(params.descriptor_list("LR3,a,b,c"), ["a", "b", "c"])
+        self.assertEqual(params.descriptor_list(""), [])
+        self.assertEqual(params.descriptor_list(None), [])
+        self.assertEqual(params.descriptor_list("i5"), [])
+
+    def test_name_table(self):
+        self.assertEqual(params.name_table("LS7,4\t4.8"), ["4", "4.8"])
+        self.assertEqual(params.name_table(None), [])
+        self.assertEqual(params.name_table("LR3,a"), [])
+
+
+class RationalTest(unittest.TestCase):
+    def test_spellings(self):
+        self.assertEqual(params.rational("1/125"), (1 << 16) | 125)
+        self.assertEqual(params.rational("30"), (30 << 16) | 1)
+        self.assertEqual(params.rational("4.8"), (48 << 16) | 10)
+        self.assertEqual(params.rational("2:30"), (230 << 16) | 100)
+
+    def test_rejects_non_numbers(self):
+        for bad in ("T", "B", "", "1/2/3", "x.y"):
+            self.assertIsNone(params.rational(bad), bad)
+
+
+class ChoicesTest(unittest.TestCase):
+    def test_iso(self):
+        order, values = params.iso_choices(lf(-1, 100, 200))
+        self.assertEqual(order, ["Auto", "100", "200"])
+        self.assertEqual(values, {"Auto": -1, "100": 100, "200": 200})
+
+    def test_iso_skips_malformed(self):
+        order, _ = params.iso_choices("LF3,zz,%s,%s" % (
+            struct.pack(">d", 400).hex(), "1" * 20))
+        self.assertEqual(order, ["400"])
+        self.assertEqual(params.iso_choices(None), ([], {}))
+
+    def test_names_match_values(self):
+        order, values = params.named_choices("LR2,r1,r2", ["4", "4.8"])
+        self.assertEqual(order, ["4", "4.8"])
+        self.assertEqual(values, {"4": "r1", "4.8": "r2"})
+
+    def test_names_converted_when_counts_differ(self):
+        order, values = params.named_choices("LR1,x", ["B", "1/125", "T", "30"])
+        self.assertEqual(order, ["1/125", "30"])
+        self.assertEqual(values["1/125"], "r%x" % ((1 << 16) | 125))
+
+    def test_no_names(self):
+        self.assertEqual(params.named_choices("LR2,a,b", []),
+                         (["a", "b"], {"a": "a", "b": "b"}))
+
+    def test_current_choice(self):
+        order, values = ["Auto", "100", "200"], {"Auto": -1, "100": 100, "200": 200}
+        self.assertEqual(params.current_choice(order, values, 200.0), "200")
+        self.assertEqual(params.current_choice(order, values, 999), "Auto")
+        self.assertIsNone(params.current_choice([], {}, 1))
+
+    def test_same_value(self):
+        self.assertTrue(params.same_value("r1", "r1"))
+        self.assertTrue(params.same_value(100, "100.0000000001"))
+        self.assertFalse(params.same_value(None, 0))
+
+
+class StatusTextTest(unittest.TestCase):
+    """capture/viewer.status_text: pure, but it lives beside the UI it describes."""
+
+    @classmethod
+    def setUpClass(cls):
+        try:
+            sys.path.insert(0, os.path.join(ROOT, "capture"))
+            import viewer
+        except ImportError as e:            # tkinter or pyusb missing
+            raise unittest.SkipTest("viewer not importable: %s" % e)
+        cls.viewer = viewer
+
+    def state(self, now=100.0, mode=None, **kw):
+        args = dict(disconnected=False, live=True, session_ok=False, live_refused=False,
+                    refused_since=0.0, recover_until=0.0, last_frame=now)
+        args.update(kw)
+        return self.viewer.status_text(now, mode, **args)
+
+    def test_order_of_precedence(self):
+        self.assertEqual(self.state(disconnected=True, live_refused=True),
+                         "camera disconnected - waiting")
+        self.assertEqual(self.state(live=False), "arming cable release (session) ...")
+        self.assertEqual(self.state(live=False, session_ok=True),
+                         "cable release armed - press the body shutter")
+        self.assertEqual(self.state(), "live")
+
+    def test_refused(self):
+        self.assertIn("Mq", self.state(mode=8, live_refused=True))
+        self.assertIn("video", self.state(mode=10, live_refused=True))
+        self.assertIn("too hot", self.state(live_refused=True, refused_since=50.0))
+        self.assertIn("wake the screen", self.state(live_refused=True, refused_since=90.0))
+
+    def test_recovering_and_stalled(self):
+        self.assertIn("recovering", self.state(recover_until=101.0, last_frame=0.0))
+        self.assertIn("check the camera", self.state(last_frame=90.0))
+        self.assertIn("Mq", self.state(mode=8, last_frame=90.0))
+
+
+if __name__ == "__main__":
+    unittest.main()

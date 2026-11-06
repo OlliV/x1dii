@@ -10,6 +10,7 @@ bleeding into this one and the result is marked unreliable.
 
   python3 liveview_min.py 20 40 60 80 120 181
 """
+import os
 import sys
 import time
 

@@ -48,8 +48,8 @@ import os
 import re
 import struct
 import sys
-import time
 import threading
+import time
 
 try:
     import usb.core
@@ -69,16 +69,28 @@ EP_OUT, EP_IN, EP_DATA = 0x04, 0x85, 0x84
 
 OP_CMD, OP_READ, OP_WRITE, OP_INDEXED, OP_LIST, OP_DESCRIBE, OP_BLOCK = 1, 2, 3, 4, 5, 6, 7
 
+HDR_OUT = bytes([0x04, 0x00, 0x08, 0x05])   # host -> camera control frame
+HDR_IN = bytes([0x03, 0x00, 0x05, 0x08])    # camera -> host control frame
+
+CODE_RELEASE = 0x0001                       # op 1: fire the shutter
+CODE_LIVE_VIEW = 0x0007                     # op 1: start/stop the preview stream
+LIVE_START = bytes([0x0C]) + bytes(9)
+LIVE_STOP = bytes(10)
+
+EVT_CAPTURE = 0x40                          # capture offered to the host (tether token)
+EVT_FILE = 0x45                             # file written to the card
+
 NAMES = {}
 
 
 def _load_table():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parameter_table.txt")
     try:
-        for line in open(path):
-            m = re.match(r"\s*(0x[0-9a-fA-F]{4})\s+(\S+)", line)
-            if m:
-                NAMES[int(m.group(1), 16)] = m.group(2)
+        with open(path) as fh:
+            for line in fh:
+                m = re.match(r"\s*(0x[0-9a-fA-F]{4})\s+(\S+)", line)
+                if m:
+                    NAMES[int(m.group(1), 16)] = m.group(2)
     except OSError:
         pass
 
@@ -117,7 +129,7 @@ def decode_typed(d):
         if tag == "f":
             return "f", struct.unpack(">d", bytes.fromhex(rest.decode().rjust(16, "0")))[0]
         if tag == "S":
-            n, _, s = rest.decode("latin-1").partition(",")
+            _, _, s = rest.decode("latin-1").partition(",")
             return "S", s
         if tag == "I":
             parts = rest.decode("latin-1").split(",")
@@ -165,37 +177,36 @@ def tiff_extent(data):
     holding the raw. The largest strip offset+length across all of them is the file
     size; reading past it just appends whatever the camera sends next.
     """
-    import struct as _s
     if len(data) < 16 or data[:4] not in (b"II*\x00", b"MM\x00*"):
         return None
     bo = "<" if data[:2] == b"II" else ">"
     sz = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 6: 1, 7: 1, 8: 2, 9: 4, 10: 8, 11: 4, 12: 8}
 
     def ifd(o):
-        cnt = _s.unpack_from(bo + "H", data, o)[0]
+        cnt = struct.unpack_from(bo + "H", data, o)[0]
         ents = {}
         for i in range(cnt):
             q = o + 2 + 12 * i
-            tag, typ, c = _s.unpack_from(bo + "HHI", data, q)
+            tag, typ, c = struct.unpack_from(bo + "HHI", data, q)
             total = sz.get(typ, 1) * c
             if total <= 4:
-                v = (_s.unpack_from(bo + "H", data, q + 8)[0] if typ == 3
-                     else _s.unpack_from(bo + "I", data, q + 8)[0])
+                v = (struct.unpack_from(bo + "H", data, q + 8)[0] if typ == 3
+                     else struct.unpack_from(bo + "I", data, q + 8)[0])
             else:
-                v = (_s.unpack_from(bo + "I", data, q + 8)[0], total)
+                v = (struct.unpack_from(bo + "I", data, q + 8)[0], total)
             ents[tag] = (typ, c, v)
-        nxt = _s.unpack_from(bo + "I", data, o + 2 + 12 * cnt)[0]
+        nxt = struct.unpack_from(bo + "I", data, o + 2 + 12 * cnt)[0]
         return ents, nxt
 
     def arr(ent):
         typ, c, v = ent
         if isinstance(v, tuple):
             fmt = "I" if typ in (4, 9) else "H"
-            return list(_s.unpack_from(bo + "%d%s" % (c, fmt), data, v[0]))
+            return list(struct.unpack_from(bo + "%d%s" % (c, fmt), data, v[0]))
         return [v]
 
     try:
-        first = _s.unpack_from(bo + "I", data, 4)[0]
+        first = struct.unpack_from(bo + "I", data, 4)[0]
         e0, _ = ifd(first)
         offsets = [first]
         if 330 in e0:
@@ -209,17 +220,6 @@ def tiff_extent(data):
         return end or None
     except Exception:
         return None
-
-
-def reset_usb():
-    """DEPRECATED - do not call. Kept only so old code fails loudly.
-
-    Nulling pyusb's module globals invalidates every live usb.core.Device: their
-    finalisers call libusb_unref_device() on freed state and the process dies with
-    EXC_ARM_DA_ALIGN inside libusb_unref_device. It was never needed either - the
-    libusb1 backend re-enumerates the bus on every find() call.
-    """
-    raise RuntimeError("reset_usb() is unsafe: it crashes on device finalisation")
 
 
 def _backend():
@@ -246,6 +246,9 @@ class Camera:
         self.io_lock = threading.RLock()  # replies and events share endpoint 0x85
         self.session_started = False
         self.pkt_stats = {}               # opcode -> count, for diagnosing the channel
+        self.last_capture_path = None     # card path from the latest 0x45 event
+        self.last_download_expected = None
+        self.last_session_sent = 0
         self.dev = usb.core.find(idVendor=VID, idProduct=PID, backend=_backend())
         if self.dev is None:
             raise SystemExit("camera not found (VID %04x PID %04x)" % (VID, PID))
@@ -272,6 +275,28 @@ class Camera:
 
     def __exit__(self, *a):
         self.close()
+
+    def _frame(self, op, code, value=b""):
+        """Build a request frame under the next sequence number. Returns (seq, frame)."""
+        self.seq = (self.seq + 1) & 0x7FFF
+        payload = struct.pack("<HBH", self.seq, op, code) + value
+        return self.seq, HDR_OUT + bytes([len(payload)]) + payload
+
+    def _send(self, op, code, value=b""):
+        """Write one request frame without waiting for a reply. Returns its seq."""
+        seq, frame = self._frame(op, code, value)
+        self.dev.write(EP_OUT, frame, timeout=self.timeout)
+        return seq
+
+    def _read_ctrl(self, timeout):
+        """One control packet's payload from 0x85, or None on timeout or a non-control read."""
+        try:
+            b = bytes(self.dev.read(EP_IN, 1024, timeout=timeout))
+        except usb.core.USBTimeoutError:
+            return None
+        if len(b) < 7 or b[0] != HDR_IN[0]:
+            return None
+        return b[5:5 + b[4]]
 
     def _recv(self, want_seq=None, deadline=2.5):
         end = time.time() + deadline
@@ -305,11 +330,11 @@ class Camera:
         return None
 
     def call(self, op, code, value=b"", retries=1):
-        self.seq = (self.seq + 1) & 0x7FFF
-        seq = self.seq
-        body = bytes([op]) + struct.pack("<H", code) + value
-        payload = struct.pack("<H", seq) + body
-        frame = bytes([0x04, 0x00, 0x08, 0x05, len(payload)]) + payload
+        """Send a request and wait for its reply. Returns (status, data) or None.
+
+        A retry resends the identical frame, sequence number included.
+        """
+        seq, frame = self._frame(op, code, value)
         for _ in range(retries + 1):
             self.dev.write(EP_OUT, frame, timeout=self.timeout)
             r = self._recv(want_seq=seq)
@@ -357,7 +382,6 @@ class Camera:
         return applied, before, after, ack
 
     def release(self, timeout=15.0, commit=True):
-        self.last_capture_path = None
         """Fire the shutter, then complete the capture handshake.
 
         1. op 1 / code 0x0001 / empty      -> shutter actuates
@@ -369,27 +393,21 @@ class Camera:
         commit handshake; without them the body fires but no file is written.
         Returns (token, [ack3, ack4]).
         """
-        self.seq = (self.seq + 1) & 0x7FFF
-        payload = struct.pack("<H", self.seq) + bytes([OP_CMD]) + struct.pack("<H", 0x0001)
-        frame = bytes([0x04, 0x00, 0x08, 0x05, len(payload)]) + payload
-        self.dev.write(EP_OUT, frame, timeout=self.timeout)
+        self.last_capture_path = None
+        self._send(OP_CMD, CODE_RELEASE)
 
         token = None
         end = time.time() + timeout
         while time.time() < end:
-            try:
-                b = bytes(self.dev.read(EP_IN, 1024, timeout=self.timeout))
-            except usb.core.USBTimeoutError:
+            p = self._read_ctrl(self.timeout)
+            if p is None:
                 continue
-            if len(b) < 7 or b[0] != 0x03:
-                continue
-            p = b[5:5 + b[4]]
-            if len(p) >= 3 and p[2] == 0x40:
+            if len(p) >= 3 and p[2] == EVT_CAPTURE:
                 # older/firmware-varies: capture event carrying a token
                 data = p[3:]
                 token = int.from_bytes(data[1:5], "little") if len(data) >= 5 else None
                 break
-            if len(p) >= 3 and p[2] == 0x45:
+            if len(p) >= 3 and p[2] == EVT_FILE:
                 # this firmware announces the written file instead:
                 #   <01 00> <id u32> <path>
                 data = p[3:]
@@ -438,7 +456,7 @@ class Camera:
         `direction` is 0x006e, confirmed the same way: 0 = towards infinity,
         1 = towards near, 2 = symmetric (near and far).
         """
-        self.call(OP_CMD, 0x0007, bytes(10), retries=0)     # live view off
+        self.stop_live()
         time.sleep(0.6)
         self.write(0x006b, frames)                          # FocusBracketingFrames
         self.write(0x006a, step)                            # step size: 0..4 named scale
@@ -456,10 +474,7 @@ class Camera:
             if self.read(0x0041) != 5:
                 raise RuntimeError("camera refused drive mode 5")
 
-        self.seq = (self.seq + 1) & 0x7FFF
-        payload = struct.pack("<H", self.seq) + bytes([OP_CMD]) + struct.pack("<H", 0x0001)
-        self.dev.write(EP_OUT, bytes([0x04, 0x00, 0x08, 0x05, len(payload)]) + payload,
-                       timeout=self.timeout)
+        self._send(OP_CMD, CODE_RELEASE)
 
         seen, end = [], time.time() + timeout
         started = last_new = time.time()
@@ -468,14 +483,10 @@ class Camera:
                 break                     # no first frame: camera never started the run
             if seen and time.time() - last_new > idle:
                 break                     # stopped early (lens limit, or busy)
-            try:
-                b = bytes(self.dev.read(EP_IN, 1024, timeout=800))
-            except usb.core.USBTimeoutError:
+            p = self._read_ctrl(800)
+            if p is None:
                 continue
-            if len(b) < 7 or b[0] != 0x03:
-                continue
-            p = b[5:5 + b[4]]
-            if len(p) >= 3 and p[2] == 0x45:
+            if len(p) >= 3 and p[2] == EVT_FILE:
                 path = p[3:][6:].decode("latin-1", "replace")
                 if path.startswith("/SD1"):        # one event per slot; count the card once
                     seen.append(path)
@@ -497,20 +508,13 @@ class Camera:
         is in a tether-transfer session it offers the image to the host and that token is
         what `download` needs. Falls back to None if no token is offered.
         """
-        self.seq = (self.seq + 1) & 0x7FFF
-        payload = struct.pack("<H", self.seq) + bytes([OP_CMD]) + struct.pack("<H", 0x0001)
-        self.dev.write(EP_OUT, bytes([0x04, 0x00, 0x08, 0x05, len(payload)]) + payload,
-                       timeout=self.timeout)
+        self._send(OP_CMD, CODE_RELEASE)
         end = time.time() + timeout
         while time.time() < end:
-            try:
-                b = bytes(self.dev.read(EP_IN, 1024, timeout=self.timeout))
-            except usb.core.USBTimeoutError:
+            p = self._read_ctrl(self.timeout)
+            if p is None:
                 continue
-            if len(b) < 7 or b[0] != 0x03:
-                continue
-            p = b[5:5 + b[4]]
-            if len(p) >= 3 and p[2] == 0x40:
+            if len(p) >= 3 and p[2] == EVT_CAPTURE:
                 return int.from_bytes(p[4:8], "little")
         return None
 
@@ -613,7 +617,7 @@ class Camera:
         failed = []
         sent = 0
         for op, code, val in seq:
-            if not live and op == OP_CMD and code == 0x0007:
+            if not live and op == OP_CMD and code == CODE_LIVE_VIEW:
                 continue                    # leave live view off: the shutter needs it
             sent += 1
             try:
@@ -633,6 +637,10 @@ class Camera:
         self.last_session_sent = sent
         return failed
 
+    def start_live(self):
+        """Start the preview stream: op 1 / 0x0007 with first byte 0x0c."""
+        return self.call(OP_CMD, CODE_LIVE_VIEW, LIVE_START)
+
     def stop_live(self):
         """Stop the preview stream.
 
@@ -640,7 +648,7 @@ class Camera:
         is released again as soon as the stream stops, but a capture will only be offered
         to the host while the tether session is still active.
         """
-        return self.call(OP_CMD, 0x0007, bytes(10), retries=0)
+        return self.call(OP_CMD, CODE_LIVE_VIEW, LIVE_STOP, retries=0)
 
     def storage(self, expected=2770004):
         """List the card. The blob arrives on 0x84, possibly in several reads."""
@@ -750,7 +758,8 @@ def main():
                     "value": cam.read(c),
                     "descriptor": cam.describe(c),
                 }
-            json.dump(state, open(out, "w"), indent=1, default=str)
+            with open(out, "w") as fh:
+                json.dump(state, fh, indent=1, default=str)
             print("wrote %s (%d parameters)" % (out, len(state)))
 
         elif cmd == "capture":
@@ -786,7 +795,6 @@ def main():
 
         elif cmd == "download":
             outdir = rest[0] if rest else "."
-            import os
             if "--session" in sys.argv:
                 cam.replay_session(verbose=True)
             # the body refuses transfers while its screen is off; live view streaming
@@ -798,7 +806,7 @@ def main():
                 print("no tether token: the session is not established "
                       "(try --session, and keep live view running)")
                 return
-            name = (getattr(cam, "last_capture_path", None) or "").rsplit("/", 1)[-1]
+            name = (cam.last_capture_path or "").rsplit("/", 1)[-1]
             if not name:
                 name = "capture_%04x.3fr" % token
             out = os.path.join(outdir, name)
@@ -829,4 +837,3 @@ def main():
 
         else:
             print(__doc__)
-
