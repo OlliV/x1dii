@@ -82,6 +82,54 @@ class ChoicesTest(unittest.TestCase):
         self.assertFalse(params.same_value(None, 0))
 
 
+class ReadBackTest(unittest.TestCase):
+    """Values read from the body against the menu built from its descriptors."""
+
+    def test_written_and_read_rationals_match(self):
+        # the menu writes 'r5000a'; the camera reads back '5000a'
+        self.assertTrue(params.same_value("r5000a", "5000a"))
+        self.assertTrue(params.same_value("5000a", "r5000a"))
+        self.assertFalse(params.same_value("r5000a", "50014"))
+
+    def test_shutter_found_in_rational_menu(self):
+        order, values = params.named_choices("LR2,x,y", ["1/125", "0.5", "B"])
+        self.assertEqual(params.current_choice(order, values, "5000a"), "0.5")
+
+    def test_rational_text(self):
+        self.assertEqual(params.rational_text("5000a"), "0.5")
+        self.assertEqual(params.rational_text("1007d"), "1/125")
+        self.assertEqual(params.rational_text("40001"), "4")
+        self.assertEqual(params.rational_text("38000a"), "5.6")
+        self.assertEqual(params.rational_text("%x" % ((150 << 16) | 1)), "2:30")
+        self.assertIsNone(params.rational_text("zz"))
+        self.assertIsNone(params.rational_text("0"))
+
+
+class EvTest(unittest.TestCase):
+    # as the X1D II describes EvAdjust: -5..+5 in single-precision thirds
+    DESC = "MLfc014000000000000,4014000000000000,3fd5555560000000"
+
+    def test_thirds(self):
+        order, values = params.ev_choices(self.DESC)
+        self.assertEqual(len(order), 31)
+        self.assertEqual(order[0], "\u22125")
+        self.assertEqual(order[-1], "+5")
+        self.assertIn("0", order)
+        self.assertIn("+1\u2153", order)
+        self.assertIn("\u2212\u2154", order)
+        self.assertEqual(values["0"], 0.0)
+        self.assertAlmostEqual(values["+1"], 1.0, places=6)
+
+    def test_read_back_matches(self):
+        order, values = params.ev_choices(self.DESC)
+        self.assertEqual(params.current_choice(order, values, 0.6666666865348816),
+                         "+\u2154")
+
+    def test_bad_descriptor(self):
+        self.assertEqual(params.ev_choices("LI2,0,1"), ([], {}))
+        self.assertEqual(params.ev_choices(None), ([], {}))
+
+
 class StatusTextTest(unittest.TestCase):
     """capture/viewer.status_text: pure, but it lives beside the UI it describes."""
 

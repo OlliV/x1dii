@@ -45,6 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from lib import hbctl              # noqa: E402
 from lib import liveview as ls     # noqa: E402
 from lib import params             # noqa: E402
+import widgets as ui                # noqa: E402
 
 import usb.core                    # noqa: E402  must come after hbctl
 
@@ -63,14 +64,29 @@ SESSION_TOLERANCE = 4
 # camera's raw values to the text the body shows; ISO has none and is decoded instead.
 CONTROLS = (("Aperture", 0x0008, 0x003e),
             ("Shutter", 0x0009, 0x003f),
-            ("ISO", 0x000a, None))
+            ("ISO", 0x000a, None),
+            # exposure compensation. The body's wheel moves QuickExposureAdjust, not
+            # EvAdjust (0x0007, which stays at 0); both take -5..+5 in thirds
+            ("EV", 0x005c, None))
 CODE_MODE = 0x0003
+NAME_CODES = {0x003e: "Aperture", 0x003f: "Shutter"}   # the body's own text for a value
 CODE_BATTERY = 0x002f
 
 # focus stack panel: the camera's own named scale, and practical frame counts
 STACK_FRAMES = (2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30)
 STEP_NAMES = ("Extra small", "Small", "Medium", "Large", "Extra large")
 DIR_NAMES = ("Towards infinity", "Towards near", "Symmetric")
+
+
+def shutter_text(v):
+    """Whole and decimal seconds get a unit ('4.0' -> '4.0s'); 1/125 and 2:30 read fine."""
+    return v + "s" if re.match(r"^\d+(\.\d+)?$", v) else v
+
+
+def aperture_text(v):
+    """Aperture menu names are bare numbers; the tile shows them as photographers do."""
+    return v if not v[:1].isdigit() else "f/" + v
+
 
 # Exposure mode as reported by 0x0003. The body owns this and the host cannot set it
 # (a write is refused with ack 0x0d), so these are only ever read.
@@ -185,10 +201,12 @@ class App:
         self._pending_live_off = False          # preview closed while the camera was busy
         self.download_dir = None
         self._vars = {}                         # control label -> tk.StringVar
-        self._menus = {}                        # control label -> tk.OptionMenu
+        self._menus = {}                        # control label -> ui.ValueTile
         self._values = {}                       # control label -> {shown text: raw value}
         self._codes = {label: code for label, code, _ in CONTROLS}
         self._applied = {}
+        self._picked_at = {}                    # control label -> time of the last menu pick
+        self._named = {}                        # control label -> mode when the body named it
         self._capture_enabled = True
         self._release_hovered = False
         self._cache_path = None
@@ -217,86 +235,79 @@ class App:
 
         # ---- controls
         root.title("X1D II tether")
-        root.configure(bg="#111")
+        root.configure(bg=ui.BG)
+        root.columnconfigure(0, weight=1)
 
-        bar = tk.Frame(root, bg="#111")
-        bar.grid(row=0, column=0, sticky="we", padx=8, pady=8)
+        bar = tk.Frame(root, bg=ui.BG)
+        bar.grid(row=0, column=0, sticky="we", padx=14, pady=(14, 12))
 
         self._make_release(bar)
 
+        # exposure: three tiles reading like the camera's own top display
         for label, _, _ in CONTROLS:
             self._make_control(bar, label)
 
-        save = tk.Frame(bar, bg="#111")
-        save.pack(side="left", padx=(18, 4))
-        self.save_var = tk.BooleanVar(value=self._save_pref_on)
-        self._check(save, " Save a copy", self.save_var,
-                    self._toggle_save).pack(anchor="w")
-        self._flat_button(save, "folder…", self._pick_dir).pack(anchor="w", pady=(2, 0))
-        self.dir_label = tk.Label(save, bg="#111", fg="#777", font=("Menlo", 9),
-                                  text=(os.path.basename(self.download_dir)
-                                        if self.download_dir else "(card only)"))
-        self.dir_label.pack(anchor="w")
+        # modes, stacked to the right: live view over saving, each a switch and one quiet
+        # line underneath saying what it means right now
+        side = tk.Frame(bar, bg=ui.BG)
+        side.pack(side="left", padx=(18, 0), fill="y")
 
         # live view has to be a switch, not a nicety: while the preview streams the body
         # refuses to fire from its own shutter, and stopping the stream does not bring it
         # back - only a session that never started live view behaves. So the two modes are
         # exclusive, and the hint says which one is armed.
-        view = tk.Frame(bar, bg="#111")
-        view.pack(side="left", padx=(18, 4))
         self.live_var = tk.BooleanVar(value=self._live_pref)
-        self.live_check = self._check(view, " Live view", self.live_var,
-                                      self._toggle_live)
+        self.live_check = ui.Switch(side, "Live view", self.live_var, self._toggle_live,
+                                    width=150)
         self.live_check.pack(anchor="w")
-        self.live_hint = tk.Label(view, bg="#111", fg="#777", font=("Menlo", 9),
-                                  text=self._live_hint_text(), anchor="w", width=22)
-        self.live_hint.pack(anchor="w", pady=(2, 0))
+        self.live_hint = tk.Label(side, bg=ui.BG, fg=ui.MUTED, font=ui.font(root, 10),
+                                  text=self._live_hint_text(), anchor="w", width=20)
+        self.live_hint.pack(anchor="w", padx=(37, 0), pady=(0, 8))
 
-        # ---- focus stack panel: collapsed by default, and when open the CAPTURE button
-        # itself runs the stack, so there is one primary action rather than two buttons
-        stack = tk.Frame(root, bg="#1a1a1a")
-        stack.grid(row=1, column=0, sticky="we", padx=8, pady=(0, 8))
+        self.save_var = tk.BooleanVar(value=self._save_pref_on)
+        ui.Switch(side, "Save a copy", self.save_var, self._toggle_save,
+                  width=150).pack(anchor="w")
+        self.dir_label = ui.Chip(side, (os.path.basename(self.download_dir)
+                                        if self.download_dir else "(card only)"),
+                                 self._pick_dir, max_width=150)
+        self.dir_label.pack(anchor="w", padx=(37, 0), pady=(1, 0))
+
+        self._rule(root, 1)
+
+        # ---- focus stack: off by default, and when on the release itself runs the stack,
+        # so there is one primary action rather than two buttons
+        stack = tk.Frame(root, bg=ui.BG)
+        stack.grid(row=2, column=0, sticky="we", padx=14, pady=10)
 
         self.stack_on = tk.BooleanVar(value=False)
-        self.stack_toggle = self._check(stack, "  Focus stack", self.stack_on,
-                                        self._toggle_stack, bg="#1a1a1a",
-                                        font=("Helvetica", 12, "bold"))
-        self.stack_toggle.pack(side="left", padx=(8, 10), pady=9)
+        self.stack_toggle = ui.Switch(stack, "Focus stack", self.stack_on,
+                                      self._toggle_stack)
+        self.stack_toggle.pack(side="left", padx=(6, 14))
 
-        self.stack_body = tk.Frame(stack, bg="#1a1a1a")
-        self.stack_body.pack(side="left", pady=9)
+        self.stack_body = tk.Frame(stack, bg=ui.BG)
+        self.stack_body.pack(side="left")
+
+        def small_tile(label, var, choices, width):
+            tile = ui.ValueTile(self.stack_body, label, var, width=width, height=46,
+                                value_size=13, disabled_note="")
+            tile.set_choices(choices)
+            tile.set_enabled(False)
+            tile.pack(side="left", padx=(0, 8))
+            return tile
 
         self.stack_frames = tk.IntVar(value=3)
-        fr_box = tk.Frame(self.stack_body, bg="#1a1a1a")
-        fr_box.pack(side="left", padx=(0, 10))
-        tk.Label(fr_box, text="frames", bg="#1a1a1a", fg="#888",
-                 font=("Helvetica", 10)).pack(anchor="w")
-        self.om_frames = tk.OptionMenu(fr_box, self.stack_frames, *STACK_FRAMES)
-        self._style_menu(self.om_frames, 5)
-        self.om_frames.pack()
-
+        self.om_frames = small_tile("Frames", self.stack_frames, STACK_FRAMES, 78)
         self.stack_step = tk.StringVar(value=STEP_NAMES[0])
-        st_box = tk.Frame(self.stack_body, bg="#1a1a1a")
-        st_box.pack(side="left", padx=(0, 12))
-        tk.Label(st_box, text="step", bg="#1a1a1a", fg="#888",
-                 font=("Helvetica", 10)).pack(anchor="w")
-        self.om_step = tk.OptionMenu(st_box, self.stack_step, *STEP_NAMES)
-        self._style_menu(self.om_step, 11)
-        self.om_step.pack()
-
+        self.om_step = small_tile("Step", self.stack_step, STEP_NAMES, 132)
         self.stack_dir = tk.StringVar(value=DIR_NAMES[0])
-        dir_box = tk.Frame(self.stack_body, bg="#1a1a1a")
-        dir_box.pack(side="left", padx=(0, 12))
-        tk.Label(dir_box, text="direction", bg="#1a1a1a", fg="#888",
-                 font=("Helvetica", 10)).pack(anchor="w")
-        self.om_dir = tk.OptionMenu(dir_box, self.stack_dir, *DIR_NAMES)
-        self._style_menu(self.om_dir, 16)
-        self.om_dir.pack()
+        self.om_dir = small_tile("Direction", self.stack_dir, DIR_NAMES, 168)
+
+        self._rule(root, 3)
 
         # status row: fixed-width message on the left so changing text cannot resize the
         # window, battery indicator pinned right
         row = tk.Frame(root, bg="#111")
-        row.grid(row=2, column=0, sticky="we", padx=10, pady=(0, 8))
+        row.grid(row=4, column=0, sticky="we", padx=14, pady=(8, 10))
         row.columnconfigure(0, weight=1)
 
         self.status = tk.Label(row, text="starting...", anchor="w", bg="#111",
@@ -375,28 +386,24 @@ class App:
 
     # ---- ui helpers
 
-    def _check(self, parent, text, variable, command, bg="#111",
-               font=("Helvetica", 11)):
-        """A checkbox styled for the dark panel."""
-        return tk.Checkbutton(parent, text=text, variable=variable, command=command,
-                              bg=bg, fg="#ccc", selectcolor="#4a4a4a",
-                              activebackground=bg, activeforeground="#fff",
-                              highlightthickness=0, font=font)
+    def _rule(self, root, row):
+        """A hairline between sections, inset to the content."""
+        rule = tk.Frame(root, bg=ui.TILE_EDGE, height=1)
+        rule.grid(row=row, column=0, sticky="we", padx=14)
 
     def _make_control(self, parent, label):
-        box = tk.Frame(parent, bg="#111")
-        box.pack(side="left", padx=6)
-        tk.Label(box, text=label, bg="#111", fg="#888",
-                 font=("Helvetica", 10)).pack(anchor="w")
-        # tk.OptionMenu rather than ttk.Combobox: the aqua combobox defers its
-        # <<ComboboxSelected>> event until focus moves or Return is pressed, so picking
-        # a value appeared to do nothing. A menubutton's command fires on the click.
+        # a drawn tile with the native menu: tk.OptionMenu cannot be styled on aqua, and
+        # ttk.Combobox defers <<ComboboxSelected>> until focus moves, so picking a value
+        # appeared to do nothing. A menu item's command fires on the click.
         var = tk.StringVar(value="")
-        om = tk.OptionMenu(box, var, "", command=lambda _v: self._set_param(label))
-        self._style_menu(om, 12)
-        om.pack()
+        tile = ui.ValueTile(parent, label, var,
+                            width=124 if label in ("Aperture", "Shutter") else 96,
+                            command=lambda _v: self._set_param(label),
+                            display={"Aperture": aperture_text,
+                                     "Shutter": shutter_text}.get(label))
+        tile.pack(side="left", padx=(0, 8))
         self._vars[label] = var
-        self._menus[label] = om
+        self._menus[label] = tile
         self._values[label] = {}
 
     # ---- the release button
@@ -491,23 +498,9 @@ class App:
         """Enable the stack controls. Nothing is packed or unpacked and the capture
         button never changes its label, so the window cannot resize as a side effect."""
         on = self.stack_on.get()
-        state = "normal" if on else "disabled"
-        for widget in (self.om_frames, self.om_step, self.om_dir):
-            try:
-                widget.configure(state=state)
-            except Exception:
-                pass
+        for tile in (self.om_frames, self.om_step, self.om_dir):
+            tile.set_enabled(on)
         self._log("focus stack mode -> %s" % on)
-
-    def _flat_button(self, parent, text, command, bg="#2d2d2d"):
-        """A dark button. tk.Button on aqua draws its own light face and ignores bg, so a
-        styled label is the only way to keep the panel's colours consistent."""
-        b = tk.Label(parent, text=text, bg=bg, fg="#ededed",
-                     font=("Helvetica", 10), padx=9, pady=3, cursor="hand2")
-        b.bind("<Button-1>", lambda e: command())
-        b.bind("<Enter>", lambda e: b.configure(bg="#3d3d3d"))
-        b.bind("<Leave>", lambda e: b.configure(bg=bg))
-        return b
 
     def _preview_geometry(self):
         """Where ffplay's window goes: (left, top, height) in screen pixels.
@@ -537,13 +530,6 @@ class App:
         except Exception:
             pass
 
-    def _style_menu(self, om, width):
-        om.configure(anchor="w", width=width, highlightthickness=0, bd=1,
-                     relief="raised", bg="#2d2d2d", fg="#eeeeee",
-                     activebackground="#3d3d3d", activeforeground="#ffffff",
-                     font=("Helvetica", 11))
-        om["menu"].configure(bg="#2d2d2d", fg="#eeeeee")
-
     # ---- saving
 
     def _default_capture_dir(self):
@@ -568,7 +554,7 @@ class App:
         self.root.focus_force()          # a modal dialogue leaves focus behind
         if d:
             self.download_dir = d
-            self.dir_label.configure(text=os.path.basename(d) or d)
+            self.dir_label.set_text(os.path.basename(d) or d)
             self._log("save dir = %s" % d)
             self._save_pref()
             if self.save_var.get():
@@ -580,8 +566,8 @@ class App:
         self._save_pref()
         if on:
             if not self.download_dir:
-                self.dir_label.configure(text="(no folder chosen)")
-                self._say("no folder chosen - pick one with folder…")
+                self.dir_label.set_text("(no folder chosen)")
+                self._say("no folder chosen - click the folder under Save a copy")
             threading.Thread(target=self._ensure_session, daemon=True).start()
 
     # ---- live view / cable release
@@ -608,7 +594,7 @@ class App:
         busy = self._camera_busy()
         if busy != self._busy_shown:
             self._busy_shown = busy
-            self.live_check.configure(state="disabled" if busy else "normal")
+            self.live_check.set_enabled(not busy)
             self.live_hint.configure(
                 text="camera busy..." if busy else self._live_hint_text())
         self.root.after(150, self._watch_busy)
@@ -902,6 +888,8 @@ class App:
                 continue
             if label == "ISO":
                 order, values = params.iso_choices(desc)
+            elif label == "EV":
+                order, values = params.ev_choices(desc)
             else:
                 order, values = params.named_choices(desc, names)
             self._log("%s: %d choices current=%r" % (label, len(order), cur))
@@ -910,20 +898,17 @@ class App:
 
     def _fill_menu(self, label, order, values, current):
         """UI thread: replace a control's menu with freshly read choices."""
-        om = self._menus[label]
+        tile = self._menus[label]
         var = self._vars[label]
-        menu = om["menu"]
-        menu.delete(0, "end")
-        for choice in order:
-            menu.add_command(label=choice,
-                             command=lambda v=choice, lb=label: self._choose(lb, v))
+        tile.set_choices(order)
         self._values[label] = values
         if order:
             var.set(params.current_choice(order, values, current))
-            om.configure(state="normal")
+            tile.set_enabled(True)
+            self._sync_value(label, current)     # off the menu: show it, not entry one
         else:
             var.set("n/a")
-            om.configure(state="disabled")
+            tile.set_enabled(False)
         self._applied[label] = var.get()
 
     def _draw_mode(self, name, accent):
@@ -946,6 +931,66 @@ class App:
         c.create_rectangle(x0 + 1, y0 + 1, x0 + 1 + fill, y1 - 1, fill=colour, outline="")
         self.batt_label.configure(text="%d%%" % pct)
 
+    def _apply_camera_state(self, mode, values):
+        """UI thread: mirror what the body reports - greying and the values themselves.
+
+        The dials on the body change these without telling the host, so the tiles follow
+        the periodic read rather than only the one made at connect.
+        """
+        self._apply_mode_state(mode, values["Aperture"], values["Shutter"])
+        for label, raw in values.items():
+            self._sync_value(label, raw)
+
+    def _param_event(self, code, value):
+        """UI thread: a parameter the body announced itself (event 0x42).
+
+        The body pushes `<code u8><typed value>` whenever a setting changes - including
+        the name of the aperture or shutter speed the meter has chosen, which is the only
+        way to see it: in A or S mode a plain read of that parameter returns 7fffffff
+        unless live view is running.
+        """
+        label = NAME_CODES.get(code)
+        if label and isinstance(value, str) and value:
+            if time.time() - self._picked_at.get(label, 0) < 3:
+                return
+            self._named[label] = self._mode       # valid until the mode changes
+            if self._vars[label].get() != value:
+                self._vars[label].set(value)
+            return
+        for label, c in self._codes.items():
+            if c == code:
+                self._sync_value(label, value)
+
+    def _sync_value(self, label, raw):
+        """Show the camera's current value, greyed out or not.
+
+        A menu choice is shown by its menu name; a rational the body reports but the menu
+        does not list is spelled out the body's way.
+        The 7fffffff "not applicable" sentinel - what the X1D II reports for whichever of
+        aperture and shutter the mode sets, unless live view runs - shows as "--", unless
+        the body has named the metered value in an event since the mode last changed.
+        None, after a failed read, leaves the tile as it was.
+        """
+        if raw is None:
+            return
+        if str(raw) == "7fffffff":
+            if self._named.get(label, -1) == self._mode:
+                return                  # the body named the metered value; keep it
+            if self._vars[label].get():
+                self._vars[label].set("")          # the tile draws an empty value as --
+            return
+        if time.time() - self._picked_at.get(label, 0) < 3:
+            return                      # the read may predate the user's own change
+        text = next((t for t, v in self._values.get(label, {}).items()
+                     if params.same_value(v, raw)), None)
+        if text is None and label in ("Aperture", "Shutter"):
+            text = params.rational_text(raw)      # e.g. the metered speed in A mode
+        if text is None or self._vars[label].get() == text:
+            return
+        self._log("%s changed on the body: %s (%r)" % (label, text, raw))
+        self._vars[label].set(text)
+        self._applied[label] = text
+
     def _apply_mode_state(self, mode, aperture, shutter):
         """Grey out whatever the current exposure mode does not allow.
 
@@ -960,20 +1005,11 @@ class App:
         self._set_enabled("Shutter", allow_sh)
 
     def _set_enabled(self, label, enabled):
-        om = self._menus[label]
-        cur = str(om.cget("state"))
-        if enabled and cur in ("normal", "active"):
-            return                      # 'active' means the pointer is over it
-        if not enabled and cur == "disabled":
+        tile = self._menus[label]
+        if tile.enabled == bool(enabled):
             return
-        om.configure(state="normal" if enabled else "disabled")
+        tile.set_enabled(enabled)
         self._log("%s %s" % (label, "enabled" if enabled else "greyed out"))
-
-    def _choose(self, label, value):
-        """OptionMenu callback: set the displayed value, then apply it."""
-        self._log("choose %s = %r" % (label, value))
-        self._vars[label].set(value)
-        self._set_param(label)
 
     def _set_param(self, label):
         code = self._codes[label]
@@ -984,6 +1020,7 @@ class App:
         raw = values[text]
         self._log("apply %s = %r (%r)" % (label, text, raw))
         self._applied[label] = text
+        self._picked_at[label] = time.time()
         self._say("%s: setting %s ..." % (label, text))
 
         def run():
@@ -1195,6 +1232,13 @@ class App:
         if op not in self._seen_ops:
             self._seen_ops.add(op)
             self._log("event opcode 0x%02x len=%d: %s" % (op, len(payload), body.hex(' ')))
+
+        if op == 0x42 and len(body) >= 2:
+            code = body[0]
+            _, value = hbctl.decode_typed(bytes(body[1:]))
+            self._log("param event 0x%02x = %r" % (code, value))
+            self.root.after(0, lambda c=code, v=value: self._param_event(c, v))
+            return
 
         if op == 0x45:
             text = body.decode("latin-1", "replace")
@@ -1429,17 +1473,15 @@ class App:
         while self.running:
             time.sleep(2)
             # read the camera first: the state text depends on the exposure mode
-            batt = ap = sh = mode = None
+            batt = mode = None
             try:
                 if self.cam is not None:
                     with self.lock:
                         batt = self.cam.read(CODE_BATTERY)
-                        ap = self.cam.read(self._codes["Aperture"])
-                        sh = self.cam.read(self._codes["Shutter"])
+                        now = {label: self.cam.read(code) for label, code, _ in CONTROLS}
                         mode = self.cam.read(CODE_MODE)
                         self._mode = mode
-                    self.root.after(0, lambda m=mode, a=ap, s=sh:
-                                    self._apply_mode_state(m, a, s))
+                    self.root.after(0, lambda m=mode, v=now: self._apply_camera_state(m, v))
             except Exception as e:
                 self._mark_lost("stats: %s" % type(e).__name__)
 

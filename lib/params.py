@@ -54,8 +54,16 @@ def rational(name):
         return None
 
 
+def _bare(v):
+    """A rational as written ('r5000a') and as read back ('5000a') are the same value."""
+    if isinstance(v, str) and v[:1] == "r":
+        return v[1:]
+    return v
+
+
 def same_value(a, b):
     """Whether a value read back from the camera matches a menu value."""
+    a, b = _bare(a), _bare(b)
     if isinstance(a, str) and isinstance(b, str) and a == b:
         return True
     try:
@@ -100,6 +108,61 @@ def named_choices(desc, names):
                 values[n] = "r%x" % v
         return order, values
     return list(vals), {v: v for v in vals}
+
+
+def _thirds(k):
+    """-4 -> '−1⅓': an EV step count in thirds, spelled as cameras print it."""
+    if k == 0:
+        return "0"
+    whole, third = divmod(abs(k), 3)
+    text = ("%d" % whole if whole else "") + ("", "\u2153", "\u2154")[third]
+    return ("+" if k > 0 else "\u2212") + text
+
+
+def ev_choices(desc):
+    """EV menu from a range descriptor 'MLf<min>,<max>,<step>' (big-endian doubles).
+
+    The X1D II reports -5..+5 in thirds. The value written back is k * step with the
+    camera's own step (a single-precision third), so it reads back exactly as written.
+    """
+    m = re.match(r"^M?Lf([0-9a-f]+),([0-9a-f]+),([0-9a-f]+)$", desc or "")
+    if not m:
+        return [], {}
+    try:
+        lo, hi, step = (struct.unpack(">d", bytes.fromhex(h.rjust(16, "0")))[0]
+                        for h in m.groups())
+    except (ValueError, struct.error):
+        return [], {}
+    if not step > 0 or not lo <= hi:
+        return [], {}
+    order, values = [], {}
+    for k in range(round(lo / step), round(hi / step) + 1):
+        text = _thirds(k) if abs(step * 3 - 1) < 1e-6 else "%+.1f" % (k * step)
+        order.append(text)
+        values[text] = k * step
+    return order, values
+
+
+def rational_text(raw):
+    """A raw rational read from the body ('5000a' = 5/10) in the body's own spelling.
+
+    Used when the camera reports a value the menu does not list - the metered shutter
+    speed in A mode, say - so the tile can still show what the camera is doing.
+    Returns None if `raw` is not a rational.
+    """
+    try:
+        v = int(_bare(str(raw)), 16)
+    except ValueError:
+        return None
+    num, den = v >> 16, v & 0xffff
+    if not num or not den:
+        return None
+    x = num / den
+    if x < 0.3:                                       # fractions: 1/125
+        return "1/%d" % round(den / num)
+    if x >= 60:                                       # minutes: 2:30
+        return "%d:%02d" % (int(x) // 60, round(x) % 60)
+    return ("%.1f" % x).rstrip("0").rstrip(".")       # seconds or f-number: 0.5, 4, 5.6
 
 
 def current_choice(order, values, current):
