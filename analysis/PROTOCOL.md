@@ -263,6 +263,26 @@ op 0x45:  <01 00> <id u32> <path>
 
 That is useful in its own right — a host can learn that a capture landed, its id, and its
 path, without polling the directory. But without the token, kind 4 cannot be driven, so
+### Card files cannot be fetched afterwards (tested 2026-11-06)
+
+Focus stacks run with no session (in one the body offers the first frame and stops; see
+`focus_bracket`), so their frames reach the card only. Ways tried to pull them later, all
+inside a freshly replayed session:
+
+| request | result |
+|---|---|
+| `op 7 / 0x0004` with the next tokens after the last offered one | refused (`08`) |
+| the same with a token already downloaded once | refused (`08`) |
+| the `0x45` file id (`01 00 <id u32>`), as u32, low u16, high u16 | refused (`08`) |
+
+A token is only good while the body is offering it. Also checked: `FocusPositionPercent`
+(`0x0059`) reads `-1` outside a session and the real position inside one, but writes are
+refused (`0d`) either way; and a bracket inside a session takes its one frame without
+moving focus. So a host-stepped stack with downloads is not possible either.
+
+Phocus does no better: the owner confirmed that focus bracketing does not work correctly
+when tethered to Phocus either (2026-11-06), so this is the firmware, not a missing step.
+
 ## 9d. File download — solved
 
 Download works, and the mechanism is the one described above:
