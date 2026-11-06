@@ -225,7 +225,6 @@ class App:
         self._capture_enabled = True
         self._release_hovered = False
         self._cache_path = None
-        self._still_win = None
         self._last_pkt_log = 0.0
         self._cfg = os.path.expanduser("~/.x1d_viewer.json")
         self._log_path = self._make_log_path()
@@ -323,6 +322,13 @@ class App:
         self.stack_dir = tk.StringVar(value=DIR_NAMES[0])
         self.om_dir = small_tile("Direction", self.stack_dir, DIR_NAMES, 168)
 
+        # closing the captures window only hides it; this brings it back (G toggles it
+        # from any of the app's windows)
+        self.captures_btn = ui.Chip(stack, "Captures", self._open_captures, glyph="grid",
+                                    max_width=104)
+        self.captures_btn.set_enabled(False)
+        self.captures_btn.pack(side="right", padx=(8, 0))
+
         self._rule(root, 3)
 
         # status row: fixed-width message on the left so changing text cannot resize the
@@ -352,6 +358,8 @@ class App:
 
         root.bind("<space>", lambda e: self.on_capture())
         root.bind("<Return>", lambda e: self.on_capture())
+        for key in ("g", "G"):
+            root.bind(key, lambda e: self.gallery.toggle())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         # a killed client leaves the camera mid-session, and the next connection fails with
         # an endpoint overflow until the body is power cycled. Close the session on the
@@ -1410,11 +1418,11 @@ class App:
                 pass
 
     def _show_still(self, raw_path):
-        """Show a captured frame: the JPEG embedded in the 3FR, resized to PNG for Tk.
+        """Put a captured frame into the four-up gallery: the JPEG embedded in the 3FR.
 
-        With live view off it goes into the four-up gallery where the preview would be;
-        with live view on, into a still window of its own, leaving the H.264 player alone
-        so the preview needs no restart. Runs on a worker (decoding takes a moment).
+        The same route with live view on or off; with it on, the gallery is a window of
+        its own beside the H.264 player, so the preview needs no restart. Runs on a
+        worker (decoding takes a moment).
         """
         try:
             with open(raw_path, "rb") as fh:
@@ -1428,53 +1436,22 @@ class App:
             self._log("still: no embedded JPEG in %s" % raw_path)
             return
         stem = os.path.splitext(os.path.basename(raw_path))[0]
-        if not self._live_pref:
-            try:
-                decoded = gallery.decode(data[i:j + 2])
-            except Exception as e:
-                self._log("still: cannot decode %s (%s)" % (stem, e))
-                return
-            self._log("still: %d bytes of JPEG from %s -> gallery" % (j - i + 2, stem))
-            self.root.after(0, lambda: self.gallery.add(decoded, stem))
-            return
-        cache = self._cache_dir()
-        jpg = os.path.join(cache, "still.jpg")
-        png = os.path.join(cache, "still.png")
         try:
-            with open(jpg, "wb") as fh:
-                fh.write(data[i:j + 2])
-            subprocess.run(["sips", "-s", "format", "png", "-Z", "1800", jpg,
-                            "--out", png],
-                           check=False, capture_output=True, timeout=20)
-            os.remove(jpg)               # needed only for the conversion
+            decoded = gallery.decode(data[i:j + 2])
         except Exception as e:
-            self._log("still: conversion failed %s" % e)
+            self._log("still: cannot decode %s (%s)" % (stem, e))
             return
-        self._log("still: %d bytes of JPEG -> %s" % (j - i + 2, png))
-        self.root.after(0, lambda: self._still_window(png))
+        self._log("still: %d bytes of JPEG from %s -> gallery" % (j - i + 2, stem))
+        self.root.after(0, lambda: self._add_capture(decoded, stem))
 
-    def _still_window(self, png):
-        try:
-            img = tk.PhotoImage(file=png)
-        except Exception as e:
-            self._log("still: Tk cannot load %s (%s)" % (png, e))
-            return
-        win = self._still_win
-        try:
-            if win is not None and win.winfo_exists():
-                win.children["img"].configure(image=img)
-                win.image = img
-                win.lift()
-                return
-        except Exception:
-            pass
-        win = tk.Toplevel(self.root)
-        win.title("X1D II capture")
-        win.configure(bg="#000")
-        lab = tk.Label(win, image=img, bg="#000", name="img")
-        lab.pack()
-        win.image = img                     # keep a reference or Tk drops the pixels
-        self._still_win = win
+    def _add_capture(self, decoded, stem):
+        """UI thread: a new capture into the gallery, and the Captures button on."""
+        self.gallery.add(decoded, stem)
+        self.captures_btn.set_enabled(True)
+
+    def _open_captures(self):
+        """The Captures button or G: reopen the gallery the user closed."""
+        self.gallery.open()
 
     def _poll(self):
         """Keep the camera's session warm the way Phocus does.

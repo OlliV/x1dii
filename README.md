@@ -30,8 +30,10 @@ pick, as well as being written to the card.
 from extra small to extra large, towards infinity, towards near or both ways. The frames go to
 the card only. The camera can't hand bracket frames to a computer; Phocus can't either.
 
-**Captures gallery.** With live view off, the last four shots appear in a 2 × 2 grid, newest
-first.
+**Captures gallery.** Every shot, with live view on or off, lands in a window that holds
+the last four in a 2 × 2 grid, newest first. Close it any time; the **Captures** button in
+the controls window brings it back, and `G` closes or reopens it from any of the app's
+windows.
 
 ![The last four captures](docs/images/gallery_grid.png)
 
@@ -79,6 +81,7 @@ restarted.
 | key | where | does |
 |---|---|---|
 | `Space` / `Return` | controls, gallery | capture (runs the stack when Focus stack is on) |
+| `G` | any of the app's windows | close the captures window, or bring it back |
 | `1`–`4` | gallery | show that capture on its own |
 | `Esc` | gallery | back to all four |
 | click / drag / scroll | gallery | zoom to 100%, look around, fit again |

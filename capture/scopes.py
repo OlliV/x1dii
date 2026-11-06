@@ -130,6 +130,7 @@ class Scopes:
         self._job = None
         self._geom_job = None
         self._photos = []
+        self.keys = {}                # extra key -> callback, bound on the window
         self.f_head = ui.font(root, 10, "bold")
         self.f_small = ui.font(root, 9)
 
@@ -151,6 +152,8 @@ class Scopes:
         c = tk.Canvas(win, width=W, height=H, bg="#000", highlightthickness=0, bd=0)
         c.pack()
         win.bind("z", lambda e: self.toggle_vec_zoom())
+        for key, fn in self.keys.items():
+            win.bind(key, lambda e, fn=fn: fn())
         c.tag_bind("vzoom", "<Button-1>", lambda e: self.toggle_vec_zoom())
         c.tag_bind("vzoom", "<Enter>", lambda e: c.configure(cursor="hand2"))
         c.tag_bind("vzoom", "<Leave>", lambda e: c.configure(cursor=""))

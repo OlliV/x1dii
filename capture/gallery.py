@@ -1,13 +1,14 @@
-"""The last four captures, for shooting with live view off.
+"""The last four captures, whether shot with live view on or off.
 
-A dark window where the live preview would otherwise sit, as large as fits below the
-controls and freely resizable. It shows the four most recent captures in a 2x2 grid,
-newest top-left. Clicking one fills the window with it; clicking a spot there zooms to
-100% around it, to judge focus, and a click (without dragging) goes back to fitting the
-window. While zoomed, drag or two-finger scroll to look around; a small overview in the
-corner shows where. Esc goes back to the grid, 1-4 open a capture, and space or return
-fire the shutter as they do in the controls window. With one capture shown, the scopes
-window (scopes.py) measures exactly what is visible; S shows or hides it.
+A dark window, by default where the live preview sits and as large as fits below the
+controls; it can be moved and resized and remembers where. It shows the four most
+recent captures in a 2x2 grid, newest top-left. Clicking one fills the window with it;
+clicking a spot there zooms to 100% around it, to judge focus, and a click (without
+dragging) goes back to fitting the window. While zoomed, drag or two-finger scroll to look
+around; a small overview in the corner shows where. Esc goes back to the grid, 1-4 open a
+capture, and space or return fire the shutter as they do in the controls window. With one
+capture shown, the scopes window (scopes.py) measures exactly what is visible; S shows or
+hides it.
 
 Each capture's embedded JPEG (4136 x 3100, half the sensor in each direction) is decoded
 once (decode(), on a worker) and kept in memory at full size, with a smaller copy for the
@@ -57,6 +58,9 @@ class Gallery:
         self.geometry = geometry
         self.on_geometry = on_geometry
         self.scopes = scopes
+        if scopes is not None:
+            for key in ("g", "G"):            # G works from the scopes window too
+                scopes.keys[key] = self.toggle
         self._geom_job = None
         self.log = log or (lambda _msg: None)
         left, top, room_w, room_h = (int(v) for v in place)
@@ -94,6 +98,33 @@ class Gallery:
         self._ensure_window()
         self.redraw()
 
+    def visible(self):
+        return (self.win is not None and self.win.winfo_exists()
+                and self.win.state() != "withdrawn")
+
+    def close(self):
+        """Hide the window (the captures are kept), and the scopes with it."""
+        if self.win is not None and self.win.winfo_exists():
+            self.win.withdraw()
+        if self.scopes is not None:
+            self.scopes.hide()
+
+    def toggle(self):
+        """G, from any of the app's windows: close the gallery, or bring it back."""
+        if self.visible():
+            self.close()
+        else:
+            self.open()
+
+    def open(self):
+        """Bring the window back after the user closed it; False when there is nothing
+        to show yet."""
+        if not self.items:
+            return False
+        self._ensure_window()
+        self.redraw()
+        return True
+
     def _photo(self, item, box):
         """A PhotoImage of `item` fitted to `box`, made once per size."""
         key = (int(box[0]), int(box[1]))
@@ -120,7 +151,7 @@ class Gallery:
         win.minsize(320, 240)
         win.geometry(self.geometry or
                      "%dx%d+%d+%d" % (self.w, self.h, self.left, self.top))
-        win.protocol("WM_DELETE_WINDOW", win.withdraw)     # keep the captures
+        win.protocol("WM_DELETE_WINDOW", self.close)       # keep the captures
         c = tk.Canvas(win, width=self.w, height=self.h, bg="#000",
                       highlightthickness=0, bd=0)
         c.pack(fill="both", expand=True)
@@ -138,6 +169,8 @@ class Gallery:
         if self.scopes is not None:
             win.bind("s", lambda e: self.scopes.toggle())
             win.bind("z", lambda e: self.scopes.toggle_vec_zoom())
+        for key in ("g", "G"):
+            win.bind(key, lambda e: self.toggle())
         for n in range(1, SLOTS + 1):
             win.bind(str(n), lambda e, i=n - 1: self.show_single(i))
         if self.on_capture:

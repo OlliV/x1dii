@@ -194,12 +194,14 @@ class Switch(_Drawn):
 
 
 class Chip(_Drawn):
-    """A quiet button naming a folder: a folder glyph, the name, brighter on hover."""
+    """A quiet button: a small glyph ("folder" or "grid") and a name, brighter on hover,
+    dimmed when disabled."""
 
-    def __init__(self, parent, text, command, bg=BG, size=11, max_width=150):
+    def __init__(self, parent, text, command, bg=BG, size=11, max_width=150, glyph="folder"):
         root = parent.winfo_toplevel()
         self.f_text = font(root, size)
         self.command = command
+        self.glyph = glyph
         self.max_width = max_width
         super().__init__(parent, max_width, 22, bg=bg)
         self.set_text(text)
@@ -226,9 +228,12 @@ class Chip(_Drawn):
         tw = self.f_text.measure(label)
         rounded_rect(self, 1, 1, tw + 35, 21, 8, fill=TILE_HOVER if hot else TILE,
                      outline=TILE_EDGE)
-        ink = TEXT if hot else MUTED
-        # folder: a tab and a body
-        self.create_polygon(9, 7, 13, 7, 15, 9, 22, 9, 22, 16, 9, 16, fill="",
-                            outline=ink, width=1.2, joinstyle="round")
+        ink = TEXT if hot else MUTED if self._enabled else DIM
+        if self.glyph == "grid":                # four small frames, as in the gallery
+            for gx, gy in ((9, 6), (16, 6), (9, 12), (16, 12)):
+                self.create_rectangle(gx, gy, gx + 5, gy + 4, outline=ink, width=1.1)
+        else:                                   # folder: a tab and a body
+            self.create_polygon(9, 7, 13, 7, 15, 9, 22, 9, 22, 16, 9, 16, fill="",
+                                outline=ink, width=1.2, joinstyle="round")
         self.create_text(28, 11, text=label, anchor="w", font=self.f_text,
-                         fill=TEXT if hot else "#c8c8cc")
+                         fill=TEXT if hot else "#c8c8cc" if self._enabled else DIM)
