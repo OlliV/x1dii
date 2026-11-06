@@ -6,7 +6,8 @@ newest top-left. Clicking one fills the window with it; clicking a spot there zo
 100% around it, to judge focus, and a click (without dragging) goes back to fitting the
 window. While zoomed, drag or two-finger scroll to look around; a small overview in the
 corner shows where. Esc goes back to the grid, 1-4 open a capture, and space or return
-fire the shutter as they do in the controls window.
+fire the shutter as they do in the controls window. With one capture shown, the scopes
+window (scopes.py) measures exactly what is visible; S shows or hides it.
 
 Each capture's embedded JPEG (4136 x 3100, half the sensor in each direction) is decoded
 once (decode(), on a worker) and kept in memory at full size, with a smaller copy for the
@@ -47,7 +48,7 @@ def fit(img, box):
 
 class Gallery:
     def __init__(self, root, place, on_capture=None, log=None, geometry=None,
-                 on_geometry=None):
+                 on_geometry=None, scopes=None):
         """`place` is (left, top, room_w, room_h): where the window goes and the screen
         space it may fill. `geometry` ("WxH+X+Y") overrides it with where the user left
         the window last time; `on_geometry` is told whenever they move or resize it."""
@@ -55,6 +56,7 @@ class Gallery:
         self.on_capture = on_capture
         self.geometry = geometry
         self.on_geometry = on_geometry
+        self.scopes = scopes
         self._geom_job = None
         self.log = log or (lambda _msg: None)
         left, top, room_w, room_h = (int(v) for v in place)
@@ -133,6 +135,9 @@ class Gallery:
         c.bind("<TouchpadScroll>", self._touchpad)
         c.bind("<Leave>", lambda e: self._set_hover(None))
         win.bind("<Escape>", lambda e: self.show_grid())
+        if self.scopes is not None:
+            win.bind("s", lambda e: self.scopes.toggle())
+            win.bind("z", lambda e: self.scopes.toggle_vec_zoom())
         for n in range(1, SLOTS + 1):
             win.bind(str(n), lambda e, i=n - 1: self.show_single(i))
         if self.on_capture:
@@ -305,13 +310,23 @@ class Gallery:
         c.delete("all")
         self._images = []
         if self.single is not None and self.single < len(self.items):
+            item = self.items[self.single]
+            self._place_scopes()
             if self.zoom is not None:
-                self._draw_zoomed(self.items[self.single])
+                box = self._draw_zoomed(item)
+                if self.scopes is not None:
+                    self.scopes.show(item["full"].crop(box),
+                                     "visible area %d \u00d7 %d" % (box[2] - box[0],
+                                                                    box[3] - box[1]))
             else:
-                self._draw_single(self.items[self.single])
+                self._draw_single(item)
+                if self.scopes is not None:
+                    self.scopes.show(item["view"], "whole frame")
         else:
             for slot in range(SLOTS):
                 self._draw_cell(slot)
+            if self.scopes is not None:
+                self.scopes.hide()
 
     def _caption(self, x, y, item, latest=False):
         """Name and time on a dark pill, anchored at its bottom-left corner."""
@@ -361,7 +376,22 @@ class Gallery:
         c.create_image(self.w / 2, self.h / 2, image=photo)
         self._images.append(photo)
         self._caption(14, self.h - 14, item, latest=(self.single == 0))
-        self._hint("click to zoom to 100%  \u00b7  Esc for all four")
+        self._hint("click to zoom to 100%  \u00b7  S scopes  \u00b7  Z 2\u00d7 vectorscope"
+                   "  \u00b7  Esc for all four")
+
+    def _place_scopes(self):
+        """First time only: put the scopes beside this window, or over its corner when
+        the screen has no room to the right."""
+        sc = self.scopes
+        if sc is None or sc.geometry or self.win is None:
+            return
+        self.win.update_idletasks()
+        x = self.win.winfo_rootx() + self.win.winfo_width() + 10
+        y = self.win.winfo_rooty()
+        if x + 470 > self.root.winfo_screenwidth():
+            x = self.win.winfo_rootx() + self.win.winfo_width() - 480
+            y = self.win.winfo_rooty() + self.win.winfo_height() - 560
+        sc.geometry = "+%d+%d" % (max(0, x), max(0, y))
 
     def _hint(self, text):
         c = self.canvas
@@ -386,6 +416,7 @@ class Gallery:
         self._navigator(item, box)
         self._caption(14, self.h - 14, item, latest=(self.single == 0))
         self._hint("100%  \u00b7  drag to look around  \u00b7  click to fit")
+        return box
 
     def _navigator(self, item, box):
         """A small overview with the visible area outlined, top-left."""

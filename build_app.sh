@@ -82,23 +82,29 @@ else
     exit 1
 fi
 
-# ---- 4b. vendor Pillow (the captures gallery decodes and resizes with it). Its compiled
-# modules are built for one Python version, so it must come from the same Python as the
-# bundle runs - the build Python, else the repo's .venv when that is the same version.
-PIL_PARENT=$("$PYTHON" -c 'import PIL,os;print(os.path.dirname(os.path.dirname(PIL.__file__)))' 2>/dev/null || true)
-if [ -z "$PIL_PARENT" ] && [ -x "$ROOT/.venv/bin/python" ]; then
-    want=$("$PYTHON" -c 'import sys;print(sys.version_info[:2])')
-    have=$("$ROOT/.venv/bin/python" -c 'import sys;print(sys.version_info[:2])')
-    [ "$want" = "$have" ] && PIL_PARENT=$("$ROOT/.venv/bin/python" -c 'import PIL,os;print(os.path.dirname(os.path.dirname(PIL.__file__)))' 2>/dev/null || true)
-fi
-if [ -n "$PIL_PARENT" ] && [ -d "$PIL_PARENT/PIL" ]; then
-    cp -R "$PIL_PARENT/PIL" "$RES/vendor/PIL"
-    find "$RES/vendor/PIL" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
-    say "pillow:  vendored from $PIL_PARENT"
-else
-    echo "error: Pillow not found. Install it with: $PYTHON -m pip install pillow" >&2
-    exit 1
-fi
+# ---- 4b. vendor Pillow and numpy (the captures gallery and the scopes use them). Their
+# compiled modules are built for one Python version, so they must come from the same
+# Python as the bundle runs - the build Python, else the repo's .venv when that is the
+# same version.
+vendor_pkg() {   # vendor_pkg <import name> <pip name>
+    parent=$("$PYTHON" -c "import $1,os;print(os.path.dirname(os.path.dirname($1.__file__)))" 2>/dev/null || true)
+    if [ -z "$parent" ] && [ -x "$ROOT/.venv/bin/python" ]; then
+        want=$("$PYTHON" -c 'import sys;print(sys.version_info[:2])')
+        have=$("$ROOT/.venv/bin/python" -c 'import sys;print(sys.version_info[:2])')
+        [ "$want" = "$have" ] && parent=$("$ROOT/.venv/bin/python" -c "import $1,os;print(os.path.dirname(os.path.dirname($1.__file__)))" 2>/dev/null || true)
+    fi
+    if [ -n "$parent" ] && [ -d "$parent/$1" ]; then
+        cp -R "$parent/$1" "$RES/vendor/$1"
+        [ -d "$parent/$1.libs" ] && cp -R "$parent/$1.libs" "$RES/vendor/$1.libs"
+        find "$RES/vendor/$1" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+        say "$2: vendored from $parent"
+    else
+        echo "error: $2 not found. Install it with: $PYTHON -m pip install $2" >&2
+        exit 1
+    fi
+}
+vendor_pkg PIL pillow
+vendor_pkg numpy numpy
 
 # ---- 5. vendor libusb (so the app does not depend on Homebrew's loader paths)
 LIBUSB=""

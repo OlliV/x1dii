@@ -47,6 +47,7 @@ from lib import liveview as ls     # noqa: E402
 from lib import params             # noqa: E402
 import widgets as ui                # noqa: E402
 import gallery                      # noqa: E402
+import scopes                       # noqa: E402
 
 import usb.core                    # noqa: E402  must come after hbctl
 
@@ -80,12 +81,12 @@ DIR_NAMES = ("Towards infinity", "Towards near", "Symmetric")
 
 
 def _on_screen(root, geom):
-    """A remembered "WxH+X+Y", or None if it would open off the screen (a display that
-    has since been unplugged) or is not a geometry at all."""
-    m = re.match(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", geom or "")
+    """A remembered "WxH+X+Y" or "+X+Y", or None if it would open off the screen (a
+    display that has since been unplugged) or is not a geometry at all."""
+    m = re.match(r"^(?:\d+x\d+)?\+(-?\d+)\+(-?\d+)$", geom or "")
     if not m:
         return None
-    w, h, x, y = (int(v) for v in m.groups())
+    x, y = (int(v) for v in m.groups())
     if x < 0 or y < 0 or x + 100 > root.winfo_screenwidth() \
             or y + 100 > root.winfo_screenheight():
         return None
@@ -242,10 +243,14 @@ class App:
             self._live_pref = bool(cfg.get("live_view", False))
             self._save_pref_on = bool(cfg.get("save_copy", True))
             self._gallery_geom = _on_screen(root, cfg.get("gallery_geometry"))
+            self._scopes_geom = _on_screen(root, cfg.get("scopes_geometry"))
+            self._vec_zoom = int(cfg.get("vectorscope_zoom", 1))
         except Exception:
             self._live_pref = False
             self._save_pref_on = True
             self._gallery_geom = None
+            self._scopes_geom = None
+            self._vec_zoom = 1
         if not self.download_dir:
             self.download_dir = self._default_capture_dir()
 
@@ -381,7 +386,12 @@ class App:
         self.gallery = gallery.Gallery(root, (left, top) + room,
                                        on_capture=self.on_capture, log=self._log,
                                        geometry=self._gallery_geom,
-                                       on_geometry=self._gallery_moved)
+                                       on_geometry=self._gallery_moved,
+                                       scopes=scopes.Scopes(
+                                           root, geometry=self._scopes_geom,
+                                           on_geometry=self._scopes_moved, log=self._log,
+                                           vec_zoom=self._vec_zoom,
+                                           on_vec_zoom=self._vec_zoomed))
         # launched from a terminal or Finder the app is not necessarily active, and Tk
         # 8.6.12 drops clicks until it is
         self.root.after(300, self._raise_controls)
@@ -627,6 +637,16 @@ class App:
         self._gallery_geom = geom
         self._save_pref()
 
+    def _scopes_moved(self, geom):
+        """The user moved the scopes window: open it there next time."""
+        self._scopes_geom = geom
+        self._save_pref()
+
+    def _vec_zoomed(self, zoom):
+        """The user toggled the vectorscope zoom: keep it for next time."""
+        self._vec_zoom = zoom
+        self._save_pref()
+
     def _save_pref(self):
         """Persist the choices that survive a restart."""
         cfg = {}
@@ -639,6 +659,9 @@ class App:
         cfg["save_copy"] = bool(self.save_var.get())
         if self._gallery_geom:
             cfg["gallery_geometry"] = self._gallery_geom
+        if self._scopes_geom:
+            cfg["scopes_geometry"] = self._scopes_geom
+        cfg["vectorscope_zoom"] = self._vec_zoom
         if self.download_dir:
             cfg["download_dir"] = self.download_dir
         try:
