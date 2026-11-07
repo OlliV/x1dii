@@ -116,8 +116,10 @@ class Scopes:
     """A small window with both scopes. show(img, label) updates it, hide() hides it."""
 
     def __init__(self, root, geometry=None, on_geometry=None, log=None, vec_zoom=1,
-                 on_vec_zoom=None):
+                 on_vec_zoom=None, bind_keys=None):
+        """`bind_keys(win)` binds the app's keys, the same in every window."""
         self.root = root
+        self.bind_keys = bind_keys
         self.vec_zoom = 2 if vec_zoom == 2 else 1
         self.on_vec_zoom = on_vec_zoom
         self.geometry = geometry
@@ -130,7 +132,6 @@ class Scopes:
         self._job = None
         self._geom_job = None
         self._photos = []
-        self.keys = {}                # extra key -> callback, bound on the window
         self.f_head = ui.font(root, 10, "bold")
         self.f_small = ui.font(root, 9)
 
@@ -139,7 +140,7 @@ class Scopes:
     def _ensure_window(self):
         if self.win is not None and self.win.winfo_exists():
             if self.win.state() == "withdrawn":
-                self.win.deiconify()
+                self._appear(self.win.deiconify)
             return
         win = tk.Toplevel(self.root)
         win.title("Scopes")
@@ -151,13 +152,23 @@ class Scopes:
         win.bind("<Configure>", self._moved)
         c = tk.Canvas(win, width=W, height=H, bg="#000", highlightthickness=0, bd=0)
         c.pack()
-        win.bind("z", lambda e: self.toggle_vec_zoom())
-        for key, fn in self.keys.items():
-            win.bind(key, lambda e, fn=fn: fn())
+        if self.bind_keys:
+            self.bind_keys(win)
         c.tag_bind("vzoom", "<Button-1>", lambda e: self.toggle_vec_zoom())
         c.tag_bind("vzoom", "<Enter>", lambda e: c.configure(cursor="hand2"))
         c.tag_bind("vzoom", "<Leave>", lambda e: c.configure(cursor=""))
         self.win, self.canvas = win, c
+        self._appear(lambda: None)
+
+    def _appear(self, show):
+        """Show the window without keeping focus: it opens because a capture was picked
+        in the gallery, and the keys pressed next are meant for the gallery. macOS hands
+        a newly shown window the focus, so give it back to whichever window had it."""
+        had = self.root.focus_get()
+        show()
+        if had is not None and had.winfo_toplevel() is not self.win:
+            top = had.winfo_toplevel()
+            self.root.after_idle(lambda: top.winfo_exists() and top.focus_force())
 
     def close(self):
         """The user closed it: stay hidden until toggled back on."""

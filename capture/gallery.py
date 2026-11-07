@@ -49,18 +49,18 @@ def fit(img, box):
 
 class Gallery:
     def __init__(self, root, place, on_capture=None, log=None, geometry=None,
-                 on_geometry=None, scopes=None):
+                 on_geometry=None, scopes=None, bind_keys=None):
         """`place` is (left, top, room_w, room_h): where the window goes and the screen
         space it may fill. `geometry` ("WxH+X+Y") overrides it with where the user left
-        the window last time; `on_geometry` is told whenever they move or resize it."""
+        the window last time; `on_geometry` is told whenever they move or resize it.
+        `bind_keys(win)` binds the app's keys, the same in every window, so the keyboard
+        keeps working whichever of them has focus."""
         self.root = root
         self.on_capture = on_capture
         self.geometry = geometry
         self.on_geometry = on_geometry
         self.scopes = scopes
-        if scopes is not None:
-            for key in ("g", "G"):            # G works from the scopes window too
-                scopes.keys[key] = self.toggle
+        self.bind_keys = bind_keys
         self._geom_job = None
         self.log = log or (lambda _msg: None)
         left, top, room_w, room_h = (int(v) for v in place)
@@ -90,8 +90,13 @@ class Gallery:
     def add(self, decoded, title):
         """UI thread: a new capture (decode()'s result). Shows the grid, newest first."""
         full, view = decoded
+        for item in self.items:
+            item["latest"] = False
+        # LATEST belongs to the shot, not to the first slot: after a removal the next
+        # one moves up, and it is not the latest capture
         self.items.insert(0, {"full": full, "view": view, "title": title,
-                              "when": time.strftime("%H:%M:%S"), "cache": {}})
+                              "when": time.strftime("%H:%M:%S"), "cache": {},
+                              "latest": True})
         del self.items[SLOTS:]
         self.single = None
         self.zoom = None
@@ -165,17 +170,8 @@ class Gallery:
         c.bind("<Shift-MouseWheel>", lambda e: self._scroll(e.delta, 0))
         c.bind("<TouchpadScroll>", self._touchpad)
         c.bind("<Leave>", lambda e: self._set_hover(None))
-        win.bind("<Escape>", lambda e: self.show_grid())
-        if self.scopes is not None:
-            win.bind("s", lambda e: self.scopes.toggle())
-            win.bind("z", lambda e: self.scopes.toggle_vec_zoom())
-        for key in ("g", "G"):
-            win.bind(key, lambda e: self.toggle())
-        for n in range(1, SLOTS + 1):
-            win.bind(str(n), lambda e, i=n - 1: self.show_single(i))
-        if self.on_capture:
-            win.bind("<space>", lambda e: self.on_capture())
-            win.bind("<Return>", lambda e: self.on_capture())
+        if self.bind_keys:
+            self.bind_keys(win)
         self.win, self.canvas = win, c
 
     def _configure(self, event):
@@ -206,6 +202,22 @@ class Gallery:
     def _resized(self):
         self._resize_job = None
         self.redraw()
+
+    def remove(self):
+        """Backspace: take a picture out of the window - the one shown on its own, or
+        in the grid the newest - and show the grid. Only the window's copy goes; the
+        .3FR on disk and on the card are untouched. Returns the removed title, or None.
+        """
+        index = self.single if self.single is not None else 0
+        if not 0 <= index < len(self.items):
+            return None
+        title = self.items.pop(index)["title"]
+        self.zoom = None
+        self.hover = None
+        self.single = None                    # back to the grid either way
+        self._set_cursor()
+        self.redraw()
+        return title
 
     def show_grid(self):
         if self.single is not None:
@@ -396,7 +408,7 @@ class Gallery:
         photo = self._photo(item, (cw, ch))
         c.create_image(x0 + cw / 2, y0 + ch / 2, image=photo)
         self._images.append(photo)
-        self._caption(x0 + 10, y0 + ch - 10, item, latest=(slot == 0))
+        self._caption(x0 + 10, y0 + ch - 10, item, latest=item.get("latest", False))
         c.create_text(x0 + cw - 12, y0 + 16, text=str(slot + 1), anchor="e",
                       font=self.f_tag, fill=ui.MUTED)
         if slot == self.hover:
@@ -408,7 +420,7 @@ class Gallery:
         photo = self._photo(item, (self.w, self.h))
         c.create_image(self.w / 2, self.h / 2, image=photo)
         self._images.append(photo)
-        self._caption(14, self.h - 14, item, latest=(self.single == 0))
+        self._caption(14, self.h - 14, item, latest=item.get("latest", False))
         self._hint("click to zoom to 100%  \u00b7  S scopes  \u00b7  Z 2\u00d7 vectorscope"
                    "  \u00b7  Esc for all four")
 
@@ -447,7 +459,7 @@ class Gallery:
         c.create_image(box[0] - left, box[1] - top, image=photo, anchor="nw")
         self._images.append(photo)
         self._navigator(item, box)
-        self._caption(14, self.h - 14, item, latest=(self.single == 0))
+        self._caption(14, self.h - 14, item, latest=item.get("latest", False))
         self._hint("100%  \u00b7  drag to look around  \u00b7  click to fit")
         return box
 

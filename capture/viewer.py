@@ -344,10 +344,6 @@ class App:
                                    font=ui.font(root, 11), width=4, anchor="e")
         self.batt_label.pack(side="left")
 
-        root.bind("<space>", lambda e: self.on_capture())
-        root.bind("<Return>", lambda e: self.on_capture())
-        for key in ("g", "G"):
-            root.bind(key, lambda e: self.gallery.toggle())
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         # a killed client leaves the camera mid-session, and the next connection fails with
         # an endpoint overflow until the body is power cycled. Close the session on the
@@ -383,11 +379,14 @@ class App:
                                        on_capture=self.on_capture, log=self._log,
                                        geometry=self._gallery_geom,
                                        on_geometry=self._gallery_moved,
+                                       bind_keys=self._bind_keys,
                                        scopes=scopes.Scopes(
                                            root, geometry=self._scopes_geom,
                                            on_geometry=self._scopes_moved, log=self._log,
                                            vec_zoom=self._vec_zoom,
-                                           on_vec_zoom=self._vec_zoomed))
+                                           on_vec_zoom=self._vec_zoomed,
+                                           bind_keys=self._bind_keys))
+        self._bind_keys(root)              # the keymap acts on the gallery and scopes
         # launched from a terminal or Finder the app is not necessarily active, and Tk
         # 8.6.12 drops clicks until it is
         self.root.after(300, self._raise_controls)
@@ -414,6 +413,63 @@ class App:
             threading.Thread(target=fn, daemon=True).start()
 
     # ---- ui helpers
+
+    # ---- keyboard: the same keys in every window
+
+    def _keymap(self):
+        """Key -> action, for the controls, the gallery and the scopes alike.
+
+        One map bound on every window, rather than each window binding what it knows
+        about: the scopes window takes focus when it appears, and keys that only the
+        gallery listened to then did nothing. With the same map everywhere, it does not
+        matter which window has focus, and the app can be run from the keyboard and the
+        camera's own controls without reaching for the mouse.
+        """
+        keys = {
+            "<space>": self.on_capture,
+            "<Return>": self.on_capture,
+            "g": self.gallery.toggle,
+            "s": self.gallery.scopes.toggle,
+            "z": self.gallery.scopes.toggle_vec_zoom,
+            "l": self._key_live,
+            "f": self._key_stack,
+            "<Escape>": self.gallery.show_grid,
+            "<BackSpace>": self._remove_capture,     # the Mac's delete key
+            "<Delete>": self._remove_capture,
+        }
+        for n in range(1, gallery.SLOTS + 1):
+            keys[str(n)] = lambda i=n - 1: self._show_capture(i)
+        return keys
+
+    def _bind_keys(self, win):
+        """Bind the keymap on `win` (a Toplevel or the root); letters both ways round,
+        so Caps Lock or Shift does not turn them off."""
+        for key, fn in self._keymap().items():
+            for name in ({key} if key.startswith("<") else {key.lower(), key.upper()}):
+                win.bind(name, lambda e, fn=fn: fn())
+
+    def _remove_capture(self):
+        """Backspace: drop a picture from the captures window. The .3FR is kept."""
+        title = self.gallery.remove()
+        if title:
+            self._log("gallery: removed %s (file kept)" % title)
+            self._say("%s removed from the window - the file is kept" % title)
+
+    def _show_capture(self, index):
+        """1-4: that capture on its own, opening the gallery if it was closed."""
+        if self.gallery.open():
+            self.gallery.show_single(index)
+
+    def _key_live(self):
+        """L: the Live view switch, with the same rule as a click - not while the
+        camera is busy (the switch is greyed out then)."""
+        if self.live_check.enabled:
+            self.live_check.activate()
+
+    def _key_stack(self):
+        """F: the focus stack on or off."""
+        self.stack_on.set(not self.stack_on.get())
+        self._toggle_stack()
 
     def _rule(self, root, row):
         """A hairline between sections, inset to the content."""

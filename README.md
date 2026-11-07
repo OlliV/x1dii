@@ -86,15 +86,24 @@ restarted.
 
 ## Keys
 
-| key | where | does |
-|---|---|---|
-| `Space` / `Return` | controls, gallery | capture (runs the stack when Focus stack is on) |
-| `G` | any of the app's windows | close the captures window, or bring it back |
-| `1`–`4` | gallery | show that capture on its own |
-| `Esc` | gallery | back to all four |
-| click / drag / scroll | gallery | zoom to 100%, look around, fit again |
-| `S` | gallery | show or hide the scopes |
-| `Z` | gallery, scopes | vectorscope 1× / 2× |
+The same keys work in every one of the app's windows (the controls, the captures and the
+scopes), so it does not matter which has focus. With the camera's own dials and these, the
+app can be run without the mouse.
+
+| key | does |
+|---|---|
+| `Space` / `Return` | capture (runs the stack when the focus stack is on) |
+| `L` | live view on or off |
+| `F` | focus stack on or off |
+| `G` | close the captures window, or bring it back |
+| `1`–`4` | show that capture on its own, opening the captures window if needed |
+| `Esc` | back to all four |
+| `Backspace` | remove the capture shown on its own, or in the grid the newest, from the window and show the grid; the `.3FR` is kept |
+| `S` | show or hide the scopes |
+| `Z` | vectorscope 1× / 2× |
+| click / drag / scroll | in the captures window: zoom to 100%, look around, fit again |
+
+The live preview is a separate player window and keeps its own keys.
 
 ## Running it
 
