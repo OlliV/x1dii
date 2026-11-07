@@ -247,6 +247,12 @@ all been observed:
 * **A tether session changes where images go.** With `Save a copy` on, the camera sends
   frames to the host instead of the card, so bracketing produces nothing and the body
   reports a failed transfer. Stacks are refused while a session is active.
+* **No video while tethered.** With the dial on video, the body's own shutter shows "Video
+  Recording not possible while tethered", and the host's release command is ignored
+  outright: no `0x40` offer, no `0x45` file event, nothing on the card. Waiting for a
+  shot used to hold the camera lock for the full 20 s. The app now greys out the release
+  in video mode (`0x0003 = 10`), refuses Space, Return and the focus stack with a
+  message, and says so in the status line.
 
 ---
 

@@ -148,6 +148,15 @@ class StatusTextTest(unittest.TestCase):
         args.update(kw)
         return self.viewer.status_text(now, mode, **args)
 
+    def test_video_mode_without_live_view(self):
+        # the release does nothing in video mode, so "remote release armed" would mislead
+        self.assertEqual(self.state(mode=self.viewer.MODE_VIDEO, live=False,
+                                    session_ok=True),
+                         "video mode - no stills; set the dial to shoot")
+        self.assertEqual(self.state(mode=self.viewer.MODE_VIDEO, live=False,
+                                    disconnected=True),
+                         "camera disconnected - waiting")
+
     def test_order_of_precedence(self):
         self.assertEqual(self.state(disconnected=True, live_refused=True),
                          "camera disconnected - waiting")

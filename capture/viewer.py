@@ -163,6 +163,9 @@ def status_text(now, mode, *, disconnected, live, session_ok, live_refused,
     """
     if disconnected:
         return "camera disconnected - waiting"
+    if mode == MODE_VIDEO and not live:
+        # the release does nothing in video mode, and video cannot be recorded tethered
+        return "video mode - no stills; set the dial to shoot"
     if not live:
         # no preview is deliberate here: the body shutter only works in a session that
         # never started live view
@@ -229,6 +232,7 @@ class App:
         self._picked_at = {}                    # control label -> time of the last menu pick
         self._named = {}                        # control label -> mode when the body named it
         self._capture_enabled = True
+        self._video_mode = False                # the dial is on video: no stills to take
         self._release_hovered = False
         self._cache_path = None
         self._last_pkt_log = 0.0
@@ -470,7 +474,8 @@ class App:
     def _draw_release(self):
         c = self.capture_canvas
         c.delete("all")
-        on = self._capture_enabled
+        on = self._capture_enabled and not self._video_mode
+        c.configure(cursor="hand2" if on else "arrow")
         hot = self._release_hovered and on
         core = BTN_ORANGE if on else "#6b6b6b"
         if hot:
@@ -1103,6 +1108,11 @@ class App:
         The mode cannot be set over USB (the write is refused with ack 0x0d) - the body
         owns it - so this only mirrors what the camera reports.
         """
+        video = mode == MODE_VIDEO
+        if video != self._video_mode:
+            self._video_mode = video
+            self._log("release %s: video mode" % ("disabled" if video else "enabled"))
+            self._draw_release()
         allow_ap, allow_sh = MODE_ALLOWS.get(mode, (True, True))
         # belt and braces: an inapplicable control also reads the 7fffffff sentinel
         allow_ap = allow_ap and aperture is not None and str(aperture) != "7fffffff"
@@ -1144,6 +1154,12 @@ class App:
     def on_capture(self):
         if not self._capture_enabled:
             return                   # a shot or a stack is already running
+        if self._video_mode:
+            # In video mode the body ignores the release: no image is offered and nothing
+            # is written, so waiting for one only held the camera for 20 s. The app
+            # cannot record video either (Phocus cannot); the dial has to change.
+            self._say("video mode - set the dial to a stills mode to shoot")
+            return
         if self.stack_on.get():
             self.on_stack()          # the panel is open, so CAPTURE means "run the stack"
             return
