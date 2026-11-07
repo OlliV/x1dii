@@ -53,6 +53,7 @@ import usb.core                    # noqa: E402  must come after hbctl
 
 QUEUE_MAX = 8
 BTN_ORANGE = "#F57513"        # Hasselblad's release-button orange
+RELEASE = 58                  # the release's size: the tiles' height, so the row is no taller
 
 # Where captures are kept unless the user picks somewhere else. ~/Pictures is the macOS
 # convention for this, and the folder is created on first run rather than assumed.
@@ -166,8 +167,8 @@ def status_text(now, mode, *, disconnected, live, session_ok, live_refused,
         # no preview is deliberate here: the body shutter only works in a session that
         # never started live view
         if session_ok:
-            return "cable release armed - press the body shutter"
-        return "arming cable release (session) ..."
+            return "remote release armed - press the body shutter"
+        return "arming remote release (session) ..."
     if live_refused:
         held = now - refused_since if refused_since else 0.0
         if mode == MODE_MQ:
@@ -263,106 +264,80 @@ class App:
         root.configure(bg=ui.BG)
         root.columnconfigure(0, weight=1)
 
+        # Kept as low as it will go, so the live view and the captures below it lose as
+        # little of the screen as possible: one row of tiles, and a thin footer.
         bar = tk.Frame(root, bg=ui.BG)
-        bar.grid(row=0, column=0, sticky="we", padx=14, pady=(14, 12))
+        bar.grid(row=0, column=0, sticky="we", padx=14, pady=(12, 10))
 
         self._make_release(bar)
 
-        # exposure: three tiles reading like the camera's own top display
+        # exposure: tiles reading like the camera's own top display
         for label, _, _ in CONTROLS:
             self._make_control(bar, label)
 
-        # where the lens is focused, live: the body pushes it as the ring turns
+        # the lens, and where it is focused, live: the body pushes both as rings turn
         self.lens_tile = ui.LensTile(bar)
         self.lens_tile.pack(side="left", padx=(0, 8))
 
-        # modes, stacked to the right: live view over saving, each a switch and one quiet
-        # line underneath saying what it means right now
+        # focus stack: one tile, its settings in its menu. When on, the release runs the
+        # stack, so there is one primary action rather than two buttons.
+        self.stack_on = tk.BooleanVar(value=False)
+        self.stack_frames = tk.IntVar(value=3)
+        self.stack_step = tk.StringVar(value=STEP_NAMES[0])
+        self.stack_dir = tk.StringVar(value=DIR_NAMES[0])
+        self.stack_tile = ui.StackTile(bar, self.stack_on, self.stack_frames,
+                                       self.stack_step, self.stack_dir, STACK_FRAMES,
+                                       STEP_NAMES, DIR_NAMES, command=self._toggle_stack)
+        self.stack_tile.pack(side="left")
+
+        # modes, on the right: two rows spanning the tiles' height, switches in one
+        # column. Live view has to be a switch, not a nicety: while the preview streams
+        # the body refuses to fire from its own shutter, and stopping the stream does not
+        # bring it back - only a session that never started live view behaves. The
+        # status line says which one is armed.
         side = tk.Frame(bar, bg=ui.BG)
-        side.pack(side="left", padx=(18, 0), fill="y")
-
-        # live view has to be a switch, not a nicety: while the preview streams the body
-        # refuses to fire from its own shutter, and stopping the stream does not bring it
-        # back - only a session that never started live view behaves. So the two modes are
-        # exclusive, and the hint says which one is armed.
+        side.pack(side="right", padx=(18, 0))
         self.live_var = tk.BooleanVar(value=self._live_pref)
-        self.live_check = ui.Switch(side, "Live view", self.live_var, self._toggle_live,
-                                    width=150)
-        self.live_check.pack(anchor="w")
-        self.live_hint = tk.Label(side, bg=ui.BG, fg=ui.MUTED, font=ui.font(root, 10),
-                                  text=self._live_hint_text(), anchor="w", width=20)
-        self.live_hint.pack(anchor="w", padx=(37, 0), pady=(0, 8))
-
+        self.live_check = ui.Switch(side, "Live view", self.live_var, self._toggle_live)
+        self.live_check.grid(row=0, column=0, sticky="w", pady=(4, 6))
         self.save_var = tk.BooleanVar(value=self._save_pref_on)
-        ui.Switch(side, "Save a copy", self.save_var, self._toggle_save,
-                  width=150).pack(anchor="w")
+        ui.Switch(side, "Save to", self.save_var, self._toggle_save).grid(
+            row=1, column=0, sticky="w", pady=(6, 4))
         self.dir_label = ui.Chip(side, (os.path.basename(self.download_dir)
                                         if self.download_dir else "(card only)"),
-                                 self._pick_dir, max_width=150)
-        self.dir_label.pack(anchor="w", padx=(37, 0), pady=(1, 0))
+                                 self._pick_dir, max_width=130)
+        self.dir_label.grid(row=1, column=1, sticky="w", padx=(8, 0), pady=(6, 4))
 
         self._rule(root, 1)
 
-        # ---- focus stack: off by default, and when on the release itself runs the stack,
-        # so there is one primary action rather than two buttons
-        stack = tk.Frame(root, bg=ui.BG)
-        stack.grid(row=2, column=0, sticky="we", padx=14, pady=10)
+        # footer: what the app is doing on the left; on the right, the captures window,
+        # the mode and the battery, ending on the same edge as the switches above
+        row = tk.Frame(root, bg=ui.BG)
+        row.grid(row=2, column=0, sticky="we", padx=14, pady=(6, 7))
+        row.columnconfigure(0, weight=1)
 
-        self.stack_on = tk.BooleanVar(value=False)
-        self.stack_toggle = ui.Switch(stack, "Focus stack", self.stack_on,
-                                      self._toggle_stack)
-        self.stack_toggle.pack(side="left", padx=(6, 14))
-
-        self.stack_body = tk.Frame(stack, bg=ui.BG)
-        self.stack_body.pack(side="left")
-
-        def small_tile(label, var, choices, width):
-            tile = ui.ValueTile(self.stack_body, label, var, width=width, height=46,
-                                value_size=13, disabled_note="")
-            tile.set_choices(choices)
-            tile.set_enabled(False)
-            tile.pack(side="left", padx=(0, 8))
-            return tile
-
-        self.stack_frames = tk.IntVar(value=3)
-        self.om_frames = small_tile("Frames", self.stack_frames, STACK_FRAMES, 78)
-        self.stack_step = tk.StringVar(value=STEP_NAMES[0])
-        self.om_step = small_tile("Step", self.stack_step, STEP_NAMES, 132)
-        self.stack_dir = tk.StringVar(value=DIR_NAMES[0])
-        self.om_dir = small_tile("Direction", self.stack_dir, DIR_NAMES, 168)
+        self.status = tk.Label(row, text="starting...", anchor="w", bg=ui.BG,
+                               fg=ui.MUTED, font=ui.font(root, 11), width=60)
+        self.status.grid(row=0, column=0, sticky="w")
 
         # closing the captures window only hides it; this brings it back (G toggles it
         # from any of the app's windows)
-        self.captures_btn = ui.Chip(stack, "Captures", self._open_captures, glyph="grid",
+        self.captures_btn = ui.Chip(row, "Captures", self._open_captures, glyph="grid",
                                     max_width=104)
         self.captures_btn.set_enabled(False)
-        self.captures_btn.pack(side="right", padx=(8, 0))
+        self.captures_btn.grid(row=0, column=1, sticky="e", padx=(8, 14))
 
-        self._rule(root, 3)
+        # the exposure mode as the body's own display shows it: a letter, no colour
+        self.mode_badge = ui.ModeBadge(row)
+        self.mode_badge.grid(row=0, column=2, sticky="e", padx=(0, 12))
 
-        # status row: fixed-width message on the left so changing text cannot resize the
-        # window, battery indicator pinned right
-        row = tk.Frame(root, bg="#111")
-        row.grid(row=4, column=0, sticky="we", padx=14, pady=(8, 10))
-        row.columnconfigure(0, weight=1)
-
-        self.status = tk.Label(row, text="starting...", anchor="w", bg="#111",
-                               fg="#9e9e9e", font=("Menlo", 11), width=58)
-        self.status.grid(row=0, column=0, sticky="w")
-
-        # mode as a compact badge rather than "mode=P" in the message text
-        self.mode_badge = tk.Label(row, text="--", bg="#2b2b2b", fg="#e8e8e8",
-                                   font=("Helvetica", 11, "bold"), width=5,
-                                   bd=1, relief="solid")
-        self.mode_badge.grid(row=0, column=1, sticky="e", padx=(8, 12))
-
-        batt_box = tk.Frame(row, bg="#111")
-        batt_box.grid(row=0, column=2, sticky="e")
-        self.batt_canvas = tk.Canvas(batt_box, width=30, height=14, bg="#111",
+        batt_box = tk.Frame(row, bg=ui.BG)
+        batt_box.grid(row=0, column=3, sticky="e")
+        self.batt_canvas = tk.Canvas(batt_box, width=26, height=14, bg=ui.BG,
                                      highlightthickness=0, bd=0)
-        self.batt_canvas.pack(side="left", padx=(8, 4))
-        self.batt_label = tk.Label(batt_box, text="--%", bg="#111", fg="#9e9e9e",
-                                   font=("Menlo", 11), width=4, anchor="e")
+        self.batt_canvas.pack(side="left", padx=(0, 4))
+        self.batt_label = tk.Label(batt_box, text="--%", bg=ui.BG, fg=ui.MUTED,
+                                   font=ui.font(root, 11), width=4, anchor="e")
         self.batt_label.pack(side="left")
 
         root.bind("<space>", lambda e: self.on_capture())
@@ -447,7 +422,7 @@ class App:
         # appeared to do nothing. A menu item's command fires on the click.
         var = tk.StringVar(value="")
         tile = ui.ValueTile(parent, label, var,
-                            width=124 if label in ("Aperture", "Shutter") else 96,
+                            width={"Aperture": 116, "Shutter": 124}.get(label, 86),
                             command=lambda _v: self._set_param(label),
                             display={"Aperture": aperture_text,
                                      "Shutter": shutter_text}.get(label))
@@ -466,15 +441,11 @@ class App:
         glossy dome. tk.Button cannot be a circle on aqua (it paints its own rounded
         rectangle and ignores most styling), so this is a Canvas.
         """
-        box = tk.Frame(parent, bg="#111")
-        box.pack(side="left", padx=(0, 16))
-        self.capture_canvas = tk.Canvas(box, width=70, height=70, bg="#111",
-                                        highlightthickness=0, bd=0, cursor="hand2")
-        self.capture_canvas.pack()
-        self.capture_label = tk.Label(box, text="CAPTURE", bg="#111", fg="#9e9e9e",
-                                      font=("Helvetica", 9, "bold"), cursor="hand2")
-        self.capture_label.pack(pady=(0, 1))
-        for w in (box, self.capture_canvas, self.capture_label):
+        self.capture_canvas = tk.Canvas(parent, width=RELEASE, height=RELEASE,
+                                        bg=ui.BG, highlightthickness=0, bd=0,
+                                        cursor="hand2")
+        self.capture_canvas.pack(side="left", padx=(0, 14))
+        for w in (self.capture_canvas,):
             w.bind("<Button-1>", self._release_click)
             w.bind("<Enter>", lambda e: self._release_hover(True))
             w.bind("<Leave>", lambda e: self._release_hover(False))
@@ -504,8 +475,10 @@ class App:
         core = BTN_ORANGE if on else "#6b6b6b"
         if hot:
             core = _mix(core, "#ffffff", 0.10)
-        cx = cy = 35.0
-        r_out, r_well, r_core = 33.0, 21.5, 17.0
+        # the same proportions as before, at the tiles' height (it was 70 with a caption)
+        k = RELEASE / 70.0
+        cx = cy = RELEASE / 2.0
+        r_out, r_well, r_core = 33.0 * k, 21.5 * k, 17.0 * k
         # the plate never changes: only the button in the middle does, so "busy" reads as
         # the one part that is actually working being taken out of play
         grey_dark = "#767676"
@@ -541,15 +514,11 @@ class App:
             c.create_oval(cx - r - off, cy - r - off, cx + r - off, cy + r - off,
                           fill=_mix(edge, lite, t ** 0.9), outline="")
 
-        self.capture_label.configure(
-            fg=(BTN_ORANGE if hot else "#d6d6d6" if on else "#9e9e9e"))
 
     def _toggle_stack(self):
         """Enable the stack controls. Nothing is packed or unpacked and the capture
         button never changes its label, so the window cannot resize as a side effect."""
         on = self.stack_on.get()
-        for tile in (self.om_frames, self.om_step, self.om_dir):
-            tile.set_enabled(on)
         self._log("focus stack mode -> %s" % on)
 
     def _preview_geometry(self):
@@ -617,13 +586,10 @@ class App:
         if on:
             if not self.download_dir:
                 self.dir_label.set_text("(no folder chosen)")
-                self._say("no folder chosen - click the folder under Save a copy")
+                self._say("no folder chosen - click the folder next to Save to")
             threading.Thread(target=self._ensure_session, daemon=True).start()
 
     # ---- live view / cable release
-
-    def _live_hint_text(self):
-        return "cable release armed" if not self._live_pref else "body shutter blocked"
 
     def _camera_busy(self):
         """True while the camera is in the middle of something a mode switch would break:
@@ -645,8 +611,6 @@ class App:
         if busy != self._busy_shown:
             self._busy_shown = busy
             self.live_check.set_enabled(not busy)
-            self.live_hint.configure(
-                text="camera busy..." if busy else self._live_hint_text())
         self.root.after(150, self._watch_busy)
 
     def _gallery_moved(self, geom):
@@ -781,7 +745,6 @@ class App:
 
     def _apply_live(self, on):
         """Carry out a live view switch on the camera, on a worker thread."""
-        self.live_hint.configure(text=self._live_hint_text())
 
         def run():                       # camera I/O stays off the UI thread
             try:
@@ -802,7 +765,7 @@ class App:
                 if not self.session_ok:
                     self._ensure_session()
                 else:
-                    self._say("live view off - press the cable release on the camera")
+                    self._say("live view off - use the remote release or the body shutter")
             finally:
                 self._live_switching = False
         self._live_switching = True
@@ -846,7 +809,7 @@ class App:
             elif self._live_pref:
                 self._say("session ready - captures will be saved and kept on the card")
             else:
-                self._say("session ready - press the cable release on the camera")
+                self._say("session ready - use the remote release or the body shutter")
         except Exception as e:
             self._log("session failed: %s" % e)
             self._say("session failed: %s" % e)
@@ -1035,23 +998,23 @@ class App:
             tile.set_enabled(False)
         self._applied[label] = var.get()
 
-    def _draw_mode(self, name, accent):
-        self.mode_badge.configure(text=name, bg=accent)
+    def _draw_mode(self, name, _accent):
+        self.mode_badge.set(name)
 
     def _draw_battery(self, pct):
         """Small battery glyph plus the number, so the row never reflows."""
         c = self.batt_canvas
         c.delete("all")
         x0, y0, x1, y1 = 1, 2, 24, 12
-        c.create_rectangle(x0, y0, x1, y1, outline="#8a8a8a", width=1)
-        c.create_rectangle(x1 + 1, y0 + 3, x1 + 4, y1 - 3, fill="#8a8a8a", outline="")
+        c.create_rectangle(x0, y0, x1 - 3, y1, outline=ui.MUTED, width=1)
+        c.create_rectangle(x1 - 2, y0 + 3, x1, y1 - 3, fill=ui.MUTED, outline="")
         if pct is None:
             self.batt_label.configure(text="--%")
             return
         pct = max(0, min(100, int(pct)))
-        span = (x1 - x0 - 2)
+        span = (x1 - 3 - x0 - 2)
         fill = max(1, int(span * pct / 100.0))
-        colour = "#4caf50" if pct > 50 else "#ffb300" if pct > 20 else "#e53935"
+        colour = ui.TEXT if pct > 20 else ui.ACCENT      # orange only when it matters
         c.create_rectangle(x0 + 1, y0 + 1, x0 + 1 + fill, y1 - 1, fill=colour, outline="")
         self.batt_label.configure(text="%d%%" % pct)
 

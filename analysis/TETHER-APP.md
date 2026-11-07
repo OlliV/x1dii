@@ -16,14 +16,17 @@ split is deliberate — Tk's photo path is slow enough to make the controls feel
 
 | control | what it does |
 |---|---|
-| the orange release | one shot; runs the bracket instead when Focus stack is ticked |
-| `Space` / `Return` | same as CAPTURE |
-| Aperture / Shutter / ISO | greyed out according to the camera's mode |
-| `☐ Live view` | switch the preview on or off — see below |
-| `☐ Focus stack` | enables the bracket controls |
-| frames / step / direction | 2–1000 · Extra small…Extra large · infinity / near / symmetric |
-| `☑ Save a copy` | also pull the full-res `.3FR` to the chosen folder |
+| the orange release | one shot; runs the bracket instead when the focus stack is on |
+| `Space` / `Return` | same as the release |
+| Aperture / Shutter / ISO / EV | greyed out according to the camera's mode |
 | Lens | read only: name, focal length (zoom range and current), focus near to ∞, live |
+| Focus stack | its menu: on/off, then frames (2–1000), step (Extra small…Extra large) and direction (infinity / near / symmetric); the tile shows e.g. `3 × XS → ∞` |
+| `☐ Live view` | switch the preview on or off — see below |
+| `☑ Save to` + folder | also pull the full-res `.3FR` to the chosen folder |
+| footer | status · Captures (reopens the gallery) · exposure mode · battery |
+
+The window is kept to one row of tiles and a thin footer, so the live view and the
+captures below it lose as little of the screen as possible.
 
 Exposure controls follow the dial: in **S** the aperture is greyed, in **A** the shutter is,
 in **P** and full-auto both are, and M / Mq / video allow both. `Mq` has no live view by

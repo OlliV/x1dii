@@ -151,9 +151,9 @@ class StatusTextTest(unittest.TestCase):
     def test_order_of_precedence(self):
         self.assertEqual(self.state(disconnected=True, live_refused=True),
                          "camera disconnected - waiting")
-        self.assertEqual(self.state(live=False), "arming cable release (session) ...")
+        self.assertEqual(self.state(live=False), "arming remote release (session) ...")
         self.assertEqual(self.state(live=False, session_ok=True),
-                         "cable release armed - press the body shutter")
+                         "remote release armed - press the body shutter")
         self.assertEqual(self.state(), "live")
 
     def test_refused(self):

@@ -23,7 +23,7 @@ It still shows the speed the camera has metered.
 The camera can't do both at once: it will not fire from its body or cable while the preview
 is streaming. Phocus works the same way.
 
-**Save a copy.** Each full 50 MP `.3FR` is downloaded straight over USB into the folder you
+**Save to a folder.** Each full 50 MP `.3FR` is downloaded straight over USB into the folder you
 pick, as well as being written to the card.
 
 **Lens and live focus.** A Lens tile beside the exposure tiles shows the attached lens:

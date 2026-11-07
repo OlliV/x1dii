@@ -6,22 +6,30 @@ next to the drawn release button. These draw themselves instead and use the nati
 only for the drop-down list, where native is what a Mac user expects.
 
   ValueTile   a labelled value ("APERTURE / f/4") that opens a menu of choices
+  StackTile   the focus stack as one tile: on/off, frames, step and direction in its menu
+  LensTile    the attached lens and where it is focused, read only
+  ModeBadge   the exposure mode as the dial marks it, a video camera for video
   Switch      a pill toggle with a label, bound to a BooleanVar
   Chip        a small clickable text button (the save folder)
+
+The look follows Hasselblad's own: near-black surfaces a step apart, hairline edges,
+small letter-spaced capitals for labels, and orange only for the release and for what
+is switched on.
 """
 import tkinter as tk
 import tkinter.font as tkfont
 
-# palette - neutral greys a step apart, one accent shared with the release button
-BG = "#111111"            # window
-TILE = "#1e1e20"          # resting surface
-TILE_HOVER = "#2a2a2d"
-TILE_EDGE = "#2f2f33"
-TEXT = "#f2f2f2"
-MUTED = "#8e8e93"         # labels, hints
-DIM = "#4c4c50"           # disabled text
+# palette - near-black greys a step apart, one accent shared with the release button
+BG = "#0c0c0d"            # window
+TILE = "#18181a"          # resting surface
+TILE_HOVER = "#222225"
+TILE_EDGE = "#29292c"     # hairlines
+TEXT = "#f4f4f4"
+MUTED = "#86868b"         # labels, hints
+DIM = "#45454a"           # disabled text
 ACCENT = "#F57513"        # Hasselblad orange, as on the release
-SWITCH_OFF = "#3a3a3d"
+SWITCH_OFF = "#333336"
+TRACK = 1.4               # letter spacing of tile labels, in points
 
 _SYSTEM = ".AppleSystemUIFont"     # SF on macOS; Tk resolves it though it is not listed
 
@@ -30,6 +38,20 @@ def font(root, size, weight="normal"):
     """The system font at `size` points, falling back to Helvetica Neue elsewhere."""
     family = _SYSTEM if root.tk.call("tk", "windowingsystem") == "aqua" else "Helvetica Neue"
     return tkfont.Font(root=root, family=family, size=size, weight=weight)
+
+
+def tracked_width(fnt, text, track=TRACK):
+    """The width of `text` drawn by tracked_text()."""
+    return sum(fnt.measure(ch) for ch in text) + track * max(0, len(text) - 1)
+
+
+def tracked_text(canvas, x, y, text, fnt, fill, track=TRACK):
+    """Letter-spaced text, left-anchored at (x, y): Tk cannot track a font, so each
+    character is placed on its own. Used for the small capitals of tile labels."""
+    for ch in text:
+        canvas.create_text(x, y, text=ch, anchor="w", font=fnt, fill=fill)
+        x += fnt.measure(ch) + track
+    return x
 
 
 def rounded_rect(canvas, x0, y0, x1, y1, r, **kw):
@@ -96,8 +118,9 @@ class ValueTile(_Drawn):
         self.disabled_note = disabled_note
         self.w, self.h = width, height
         root = self.winfo_toplevel()
-        self.f_label = font(root, 10, "bold")
+        self.f_label = font(root, 9, "bold")
         self.f_value = font(root, value_size)
+        self.f_value_small = font(root, value_size - 4)     # when the value would not fit
         self.f_note = font(root, 8, "bold")
         self.menu = tk.Menu(self, tearoff=False)
         self._choices = []
@@ -130,17 +153,22 @@ class ValueTile(_Drawn):
     def redraw(self):
         self.delete("all")
         on, hot = self._enabled, self._hover and self._enabled
-        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 10,
+        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 8,
                      fill=TILE_HOVER if hot else TILE,
                      outline=TILE_EDGE if on else TILE, width=1)
         ly, vy = 14, 15 + (self.h - 15) / 2 + 2      # label line, value line
-        self.create_text(12, ly, text=self.label, anchor="w", font=self.f_label,
-                         fill=MUTED if on else DIM)
+        tracked_text(self, 12, ly, self.label, self.f_label, MUTED if on else DIM)
         value = self.variable.get()
         text = self.display(value) if value not in ("", None) else "--"
-        self.create_text(12, vy, text=text, anchor="w", font=self.f_value,
+        # what sits at the right of the value line: the AUTO note, or the chevron
+        noted = not on and self.disabled_note and self._choices
+        right = (self.w - 10 - self.f_note.measure(self.disabled_note) if noted
+                 else self.w - 22 if on and self._choices else self.w - 10)
+        f = self.f_value if 12 + self.f_value.measure(text) + 6 <= right \
+            else self.f_value_small
+        self.create_text(12, vy, text=text, anchor="w", font=f,
                          fill=TEXT if on else DIM)
-        if not on and self.disabled_note and self._choices:
+        if noted:
             self.create_text(self.w - 10, vy, text=self.disabled_note, anchor="e",
                              font=self.f_note, fill=ACCENT)
         elif on and self._choices:          # a small chevron says "this opens"
@@ -148,6 +176,68 @@ class ValueTile(_Drawn):
             self.create_line(cx - 4, cy - 2, cx, cy + 2, cx + 4, cy - 2,
                              fill=TEXT if hot else MUTED, width=1.6,
                              capstyle="round", joinstyle="round")
+
+
+class StackTile(_Drawn):
+    """The focus stack as one tile, so it needs no row of its own.
+
+    A click opens a menu: a tick to turn the stack on (the release then runs it) and
+    submenus for frames, step and direction, bound to the caller's variables. The tile
+    shows the settings in short form, "3 × XS → ∞", dimmed while the stack is off.
+    """
+
+    STEP_SHORT = ("XS", "S", "M", "L", "XL")
+    DIR_SHORT = ("\u2192 \u221e", "\u2192 near", "\u2194")
+
+    def __init__(self, parent, on_var, frames_var, step_var, dir_var, frames, steps,
+                 dirs, command=None, width=172, height=58, bg=BG):
+        super().__init__(parent, width, height, bg=bg)
+        self.w, self.h = width, height
+        self.on_var, self.frames_var = on_var, frames_var
+        self.step_var, self.dir_var = step_var, dir_var
+        self.steps, self.dirs = list(steps), list(dirs)
+        root = self.winfo_toplevel()
+        self.f_label = font(root, 9, "bold")
+        self.f_value = font(root, 15)
+        self.f_note = font(root, 8, "bold")
+        self.menu = tk.Menu(self, tearoff=False)
+        self.menu.add_checkbutton(label="Focus stack", variable=on_var, command=command)
+        self.menu.add_separator()
+        for label, var, choices in (("Frames", frames_var, frames),
+                                    ("Step", step_var, steps),
+                                    ("Direction", dir_var, dirs)):
+            sub = tk.Menu(self.menu, tearoff=False)
+            for c in choices:
+                sub.add_radiobutton(label=str(c), value=c, variable=var)
+            self.menu.add_cascade(label=label, menu=sub)
+        for var in (on_var, frames_var, step_var, dir_var):
+            var.trace_add("write", lambda *_: self.redraw())
+        self.redraw()
+
+    def activate(self):
+        try:
+            self.menu.tk_popup(self.winfo_rootx(), self.winfo_rooty() + self.h + 2)
+        finally:
+            self.menu.grab_release()
+
+    def _short(self):
+        step, d = self.step_var.get(), self.dir_var.get()
+        step = self.STEP_SHORT[self.steps.index(step)] if step in self.steps else step
+        d = self.DIR_SHORT[self.dirs.index(d)] if d in self.dirs else d
+        return "%s \u00d7 %s  %s" % (self.frames_var.get(), step, d)
+
+    def redraw(self):
+        self.delete("all")
+        on, hot = bool(self.on_var.get()), self._hover
+        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 8,
+                     fill=TILE_HOVER if hot else TILE,
+                     outline=ACCENT if on else TILE_EDGE, width=1)
+        ly, vy = 14, 15 + (self.h - 15) / 2 + 2
+        tracked_text(self, 12, ly, "FOCUS STACK", self.f_label, MUTED)
+        self.create_text(self.w - 10, ly, text="ON" if on else "OFF", anchor="e",
+                         font=self.f_note, fill=ACCENT if on else DIM)
+        self.create_text(12, vy, text=self._short(), anchor="w", font=self.f_value,
+                         fill=TEXT if on else MUTED if hot else DIM)
 
 
 class LensTile(_Drawn):
@@ -159,12 +249,12 @@ class LensTile(_Drawn):
     metres. When there is no position, a short note says why. Read only.
     """
 
-    def __init__(self, parent, width=220, height=58, bg=BG):
+    def __init__(self, parent, width=210, height=58, bg=BG):
         super().__init__(parent, width, height, bg=bg)
         self.configure(cursor="arrow")
         self.w, self.h = width, height
         root = self.winfo_toplevel()
-        self.f_label = font(root, 10, "bold")
+        self.f_label = font(root, 9, "bold")
         self.f_value = font(root, 12)
         self.f_small = font(root, 9)
         self.f_inf = font(root, 13)
@@ -213,7 +303,7 @@ class LensTile(_Drawn):
         v = self.value
         on = v is not None
         lens = self.focal is not None or self.name is not None
-        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 10, fill=TILE,
+        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 8, fill=TILE,
                      outline=TILE_EDGE if (on or lens) else TILE, width=1)
 
         # top line: name, then the focal length (and range) on the right
@@ -229,10 +319,9 @@ class LensTile(_Drawn):
                              fill=MUTED)
             right -= self.f_small.measure(span) + 6
         name = (self.name or "LENS").upper()
-        while name and self.f_label.measure(name) > right - 12:
+        while name and tracked_width(self.f_label, name) > right - 12:
             name = name[:-1]
-        self.create_text(12, ty, text=name, anchor="w", font=self.f_label,
-                         fill=MUTED if lens else DIM)
+        tracked_text(self, 12, ty, name, self.f_label, MUTED if lens else DIM)
 
         # bottom line: the focus track, or why there is none
         by = 40
@@ -252,6 +341,32 @@ class LensTile(_Drawn):
         mx = x0 + (x1 - x0) * v
         self.create_line(x0, by, mx, by, fill=ACCENT, width=3, capstyle="round")
         self.create_oval(mx - 5, by - 5, mx + 5, by + 5, fill="#ffffff", outline="")
+
+
+class ModeBadge(tk.Canvas):
+    """The exposure mode as the camera's dial marks it: a letter, the square for full
+    auto, or a small video camera for video. White on a dark tile, no colour."""
+
+    VIDEO = "Video"
+
+    def __init__(self, parent, width=34, height=22, bg=BG):
+        super().__init__(parent, width=width, height=height, bg=bg,
+                         highlightthickness=0, bd=0)
+        self.w, self.h = width, height
+        self.f_text = font(self.winfo_toplevel(), 11, "bold")
+        self.set("--")
+
+    def set(self, name):
+        self.delete("all")
+        rounded_rect(self, 0, 0, self.w, self.h, 5, fill=TILE, outline="")
+        cx, cy = self.w / 2, self.h / 2
+        if name == self.VIDEO:
+            # body and lens wedge, as on the dial: the wedge points away from the body
+            rounded_rect(self, cx - 9, cy - 5, cx + 3, cy + 5, 2, fill=TEXT, outline="")
+            self.create_polygon(cx + 4, cy - 1, cx + 9, cy - 5, cx + 9, cy + 5,
+                                cx + 4, cy + 1, fill=TEXT, outline="")
+            return
+        self.create_text(cx, cy, text=name, font=self.f_text, fill=TEXT)
 
 
 class Switch(_Drawn):
@@ -311,7 +426,11 @@ class Chip(_Drawn):
         self.set_text(text)
 
     def set_text(self, text):
+        """The chip is as wide as its pill, never wider, so a chip gridded to the right
+        ends exactly where the pill does."""
         self.text = text
+        label = self._fit(text, self.max_width - 36)
+        self.configure(width=int(self.f_text.measure(label)) + 37)
         self.redraw()
 
     def activate(self):
