@@ -264,7 +264,7 @@ class App:
             self.download_dir = self._default_capture_dir()
 
         # ---- controls
-        root.title("X1D II tether")
+        root.title("X1D II Tether")
         root.configure(bg=ui.BG)
         root.columnconfigure(0, weight=1)
 
