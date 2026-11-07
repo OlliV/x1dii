@@ -26,6 +26,14 @@ is streaming. Phocus works the same way.
 **Save a copy.** Each full 50 MP `.3FR` is downloaded straight over USB into the folder you
 pick, as well as being written to the card.
 
+**Lens and live focus.** A Lens tile beside the exposure tiles shows the attached lens:
+its name when it reports one, its focal length, and for a zoom the range and the current
+focal length as you zoom. Through the XH Converter 0,8 focal lengths are the effective
+ones (×0.8). Below that it shows where the lens is focused, from near to ∞, following
+the focus ring. The camera reports a position along the lens's travel, not a distance in
+metres, so it reads as a percentage. Only lenses that autofocus on the X bodies report
+it; for others the tile says so.
+
 **Focus stacking.** The camera's own focus bracket, run from the app: 2 to 1000 frames, step
 from extra small to extra large, towards infinity, towards near or both ways. The frames go to
 the card only. The camera can't hand bracket frames to a computer; Phocus can't either.

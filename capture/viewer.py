@@ -73,6 +73,11 @@ CONTROLS = (("Aperture", 0x0008, 0x003e),
 CODE_MODE = 0x0003
 NAME_CODES = {0x003e: "Aperture", 0x003f: "Shutter"}   # the body's own text for a value
 CODE_BATTERY = 0x002f
+CODE_FOCUS = 0x0059        # FocusPositionPercent: 0.0 near .. 1.0 infinity, pushed live
+CODE_LENS = 0x003d         # 1 while a lens is attached, 0 when it comes off
+CODE_FOCAL = 0x002e        # focal length in mm, pushed as a zoom turns
+CODE_LENS_NAME = 0x0078    # the lens's name; HC lenses on the XH converter send none
+NO_FOCUS = "focus not reported by this lens"
 
 # focus stack panel: the camera's own named scale, and practical frame counts
 STACK_FRAMES = (2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30)
@@ -266,6 +271,10 @@ class App:
         # exposure: three tiles reading like the camera's own top display
         for label, _, _ in CONTROLS:
             self._make_control(bar, label)
+
+        # where the lens is focused, live: the body pushes it as the ring turns
+        self.lens_tile = ui.LensTile(bar)
+        self.lens_tile.pack(side="left", padx=(0, 8))
 
         # modes, stacked to the right: live view over saving, each a switch and one quiet
         # line underneath saying what it means right now
@@ -903,8 +912,9 @@ class App:
                 if self._try_connect():
                     if not first:
                         self._say("camera reconnected")
-                    if not self._live_pref:
-                        self._ensure_session()
+                    # with live view on as well: only inside a session does the body
+                    # push the focus position (0x0059) as the ring turns
+                    self._ensure_session()
                     self._load_controls()
             first = False
 
@@ -928,6 +938,7 @@ class App:
         if not self.disconnected:
             self._log("connection lost: %s" % why)
             self.disconnected = True
+            self.root.after(0, lambda: self.lens_tile.set_focus(None))
 
     def _load_controls(self):
         """Read each exposure control's choices, then fill its menu on the UI thread.
@@ -956,6 +967,58 @@ class App:
             self._log("%s: %d choices current=%r" % (label, len(order), cur))
             self.root.after(0, lambda lb=label, o=order, v=values, c=cur:
                             self._fill_menu(lb, o, v, c))
+        self._read_lens()
+
+    def _read_lens(self):
+        """Worker: the lens's name, focal length and range, and the focus position,
+        until the body pushes the next ones as the zoom or focus ring turns."""
+        cam = self.cam
+        if cam is None:
+            return
+        try:
+            with self.lock:
+                pos = params.focus_position(cam.read(CODE_FOCUS))
+                mounted = cam.read(CODE_LENS)
+                name = params.lens_name(cam.read(CODE_LENS_NAME))
+                focal = params.focal_length(cam.read(CODE_FOCAL))
+                span = params.focal_range(cam.describe(CODE_FOCAL))
+        except Exception:
+            return
+        self._log("lens: mounted=%r name=%r focal=%r range=%r focus=%r"
+                  % (mounted, name, focal, span, pos))
+
+        def show():
+            if mounted == 0:
+                self.lens_tile.clear_lens()
+                return
+            self.lens_tile.set_lens(name, focal, span)
+            # only lenses that autofocus on the X bodies report a position (an HC lens
+            # on the XH converter may not); say so rather than leave a bare "--"
+            self.lens_tile.set_focus(pos, None if pos is not None else NO_FOCUS)
+        self.root.after(0, show)
+
+    def _lens_attached(self):
+        """UI thread: the body announced a newly attached lens (0x003d = 1).
+
+        Not the lens name (0x0078): the HC 100mm on the XH Converter 0,8 attaches
+        without sending one.
+
+        After a lens change the body reports the focus position as unavailable (0x0059
+        reads -1.0, and no events come as the ring turns) until the tether session is
+        replayed. Waiting, re-describing the focus codes and restarting live view do not
+        bring it back; a replay does. So replay it, unless one is already running or a
+        stack has the session closed on purpose.
+        """
+        self._log("lens attached")
+        if (self._establishing or self.capturing or self.cam is None
+                or self.disconnected or not self.session_ok):
+            return
+        self.session_ok = False
+
+        def run():
+            self._ensure_session()
+            self._read_lens()
+        threading.Thread(target=run, daemon=True).start()
 
     def _fill_menu(self, label, order, values, current):
         """UI thread: replace a control's menu with freshly read choices."""
@@ -1010,6 +1073,25 @@ class App:
         way to see it: in A or S mode a plain read of that parameter returns 7fffffff
         unless live view is running.
         """
+        tile = self.lens_tile
+        if code == CODE_FOCUS:
+            pos = params.focus_position(value)
+            # -1.0 follows 0x003d = 0 on a detach: keep the "no lens" it set
+            tile.set_focus(pos, None if pos is not None else tile.note)
+            return
+        if code == CODE_FOCAL:
+            tile.set_focal(params.focal_length(value))
+            return
+        if code == CODE_LENS_NAME:
+            tile.name = params.lens_name(value)
+            tile.redraw()
+            return
+        if code == CODE_LENS:
+            if value == 1:
+                self._lens_attached()
+            elif value == 0:
+                tile.clear_lens()
+            return
         label = NAME_CODES.get(code)
         if label and isinstance(value, str) and value:
             if time.time() - self._picked_at.get(label, 0) < 3:
@@ -1228,6 +1310,10 @@ class App:
                         self._start_live()
                     except Exception as e:
                         self._log("stack: live restart failed %s" % e)
+                    if reopen:
+                        self._settle_card()
+                        self._log("stack: reopening tether session")
+                        self._ensure_session()     # the focus readout needs it
                 elif reopen:
                     self._settle_card()
                     self._log("stack: reopening tether session")

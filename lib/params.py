@@ -171,3 +171,56 @@ def current_choice(order, values, current):
         if same_value(raw, current):
             return label
     return order[0] if order else None
+
+
+def focus_position(raw):
+    """0x0059 FocusPositionPercent -> lens position 0.0 (near) .. 1.0 (infinity), or None.
+
+    Despite the name it is a fraction, not a percent. The body pushes it (event 0x42)
+    while the focus ring turns, but only inside a tether session; outside one, and with
+    no lens to report, it reads -1.0. There is no distance in metres on the protocol:
+    FocusDistanceScale (0x005a) reads six zeros with the XCD 45P.
+    """
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not 0.0 <= v <= 1.0:
+        return None
+    return v
+
+
+def focal_length(raw):
+    """0x002e FocalLength -> millimetres as an int, or None (0 or -1 with no lens).
+
+    Through the XH Converter 0,8 it is already the effective focal length (the HC 100mm
+    reads 80), and a zoom pushes it as it turns, in steps of about 5 mm.
+    """
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def focal_range(desc):
+    """0x002e's descriptor 'MLi<min>,<max>,<step>' -> (min, max) in mm, or None.
+
+    A prime reads e.g. 'MLi45,45,1'. The zoom's maximum is not to be trusted: the
+    HC 50-110 on the XH converter is described as 40..85 but reads up to 90.
+    """
+    m = re.match(r"^M?Li(-?\d+),(-?\d+),\d+$", desc or "")
+    if not m:
+        return None
+    lo, hi = int(m.group(1)), int(m.group(2))
+    if lo <= 0 or hi < lo:
+        return None
+    return lo, hi
+
+
+def lens_name(raw):
+    """0x0078 LensProductName -> the name, or None. HC lenses on the XH converter send
+    none."""
+    if not isinstance(raw, str):
+        return None
+    return raw.strip() or None

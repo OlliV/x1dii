@@ -168,5 +168,40 @@ class StatusTextTest(unittest.TestCase):
         self.assertIn("Mq", self.state(mode=8, last_frame=90.0))
 
 
+class FocusPositionTest(unittest.TestCase):
+    def test_range(self):
+        self.assertEqual(params.focus_position(0.0), 0.0)
+        self.assertEqual(params.focus_position(1.0), 1.0)
+        self.assertAlmostEqual(params.focus_position(0.3817005545286507), 0.3817, 4)
+
+    def test_not_available(self):
+        self.assertIsNone(params.focus_position(-1.0))      # no session / no lens
+        self.assertIsNone(params.focus_position(None))      # a failed read
+        self.assertIsNone(params.focus_position("3fd86dc829a4331c"))
+        self.assertIsNone(params.focus_position(1.5))
+
+
+
+class LensTest(unittest.TestCase):
+    def test_focal_length(self):
+        self.assertEqual(params.focal_length(45), 45)
+        self.assertEqual(params.focal_length("80"), 80)
+        self.assertIsNone(params.focal_length(0))       # lens off
+        self.assertIsNone(params.focal_length(-1))
+        self.assertIsNone(params.focal_length(None))
+
+    def test_focal_range(self):
+        self.assertEqual(params.focal_range("MLi45,45,1"), (45, 45))
+        self.assertEqual(params.focal_range("MLi40,85,1"), (40, 85))
+        self.assertIsNone(params.focal_range("MLi0,0,1"))
+        self.assertIsNone(params.focal_range(None))
+        self.assertIsNone(params.focal_range("LI2,0,1"))
+
+    def test_lens_name(self):
+        self.assertEqual(params.lens_name("XCD 45P"), "XCD 45P")
+        self.assertIsNone(params.lens_name(None))
+        self.assertIsNone(params.lens_name("  "))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -150,6 +150,110 @@ class ValueTile(_Drawn):
                              capstyle="round", joinstyle="round")
 
 
+class LensTile(_Drawn):
+    """The attached lens, live, as a tile beside the exposure tiles.
+
+    Top line: the lens's name ("LENS" when it sends none) and its focal length, with the
+    range before it for a zoom. Bottom line: the focus position on a track from near to
+    infinity, as a percentage of the lens's travel; the camera reports no distance in
+    metres. When there is no position, a short note says why. Read only.
+    """
+
+    def __init__(self, parent, width=220, height=58, bg=BG):
+        super().__init__(parent, width, height, bg=bg)
+        self.configure(cursor="arrow")
+        self.w, self.h = width, height
+        root = self.winfo_toplevel()
+        self.f_label = font(root, 10, "bold")
+        self.f_value = font(root, 12)
+        self.f_small = font(root, 9)
+        self.f_inf = font(root, 13)
+        self.value = None              # focus, 0.0 near .. 1.0 infinity
+        self.note = None               # why there is no focus value
+        self.name = None
+        self.focal = None
+        self.range = None              # (min, max) mm
+        self.redraw()
+
+    def set_focus(self, value, note=None):
+        """`value` 0.0 (near) .. 1.0 (infinity), or None with an optional `note` saying
+        why there is none, shown in place of the track."""
+        if (value, note) != (self.value, self.note):
+            self.value, self.note = value, note
+            self.redraw()
+
+    def set_lens(self, name, focal, focal_range):
+        self.name, self.focal, self.range = name, None, focal_range
+        self.set_focal(focal)
+        self.redraw()
+
+    def set_focal(self, focal):
+        """The current focal length. A zoom can read past the range the camera
+        describes (40-85 for one that reaches 90), so the range widens to include it."""
+        if focal and self.range:
+            lo, hi = self.range
+            self.range = (min(lo, focal), max(hi, focal))
+        if focal != self.focal:
+            self.focal = focal
+            self.redraw()
+
+    def clear_lens(self):
+        self.name, self.focal, self.range = None, None, None
+        self.set_focus(None, "no lens")
+        self.redraw()
+
+    def _set_hover(self, on):
+        pass
+
+    def activate(self):
+        pass
+
+    def redraw(self):
+        self.delete("all")
+        v = self.value
+        on = v is not None
+        lens = self.focal is not None or self.name is not None
+        rounded_rect(self, 1, 1, self.w - 1, self.h - 1, 10, fill=TILE,
+                     outline=TILE_EDGE if (on or lens) else TILE, width=1)
+
+        # top line: name, then the focal length (and range) on the right
+        ty = 14
+        right = self.w - 12
+        focal = "%d mm" % self.focal if self.focal else "--"
+        self.create_text(right, ty, text=focal, anchor="e", font=self.f_value,
+                         fill=TEXT if self.focal else DIM)
+        right -= self.f_value.measure(focal) + 6
+        if self.range and self.range[0] != self.range[1]:
+            span = "%d\u2013%d" % self.range
+            self.create_text(right, ty, text=span, anchor="e", font=self.f_small,
+                             fill=MUTED)
+            right -= self.f_small.measure(span) + 6
+        name = (self.name or "LENS").upper()
+        while name and self.f_label.measure(name) > right - 12:
+            name = name[:-1]
+        self.create_text(12, ty, text=name, anchor="w", font=self.f_label,
+                         fill=MUTED if lens else DIM)
+
+        # bottom line: the focus track, or why there is none
+        by = 40
+        if not on:
+            self.create_text(12, by, anchor="w", font=self.f_small, fill=MUTED,
+                             text=self.note or "focus --")
+            return
+        pct = "%d%%" % round(v * 100)
+        self.create_text(self.w - 12, by, text=pct, anchor="e", font=self.f_value,
+                         fill=TEXT)
+        x0 = 12 + self.f_small.measure("near") + 7
+        x1 = self.w - 12 - self.f_value.measure("100%") - 10 - self.f_inf.measure("\u221e") - 7
+        self.create_text(12, by, text="near", anchor="w", font=self.f_small, fill=MUTED)
+        self.create_text(x1 + 7, by - 1, text="\u221e", anchor="w", font=self.f_inf,
+                         fill=MUTED)
+        self.create_line(x0, by, x1, by, fill=SWITCH_OFF, width=3, capstyle="round")
+        mx = x0 + (x1 - x0) * v
+        self.create_line(x0, by, mx, by, fill=ACCENT, width=3, capstyle="round")
+        self.create_oval(mx - 5, by - 5, mx + 5, by + 5, fill="#ffffff", outline="")
+
+
 class Switch(_Drawn):
     """A pill switch with its label to the right; the whole thing is clickable."""
 

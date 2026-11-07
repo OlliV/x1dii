@@ -23,6 +23,7 @@ split is deliberate — Tk's photo path is slow enough to make the controls feel
 | `☐ Focus stack` | enables the bracket controls |
 | frames / step / direction | 2–1000 · Extra small…Extra large · infinity / near / symmetric |
 | `☑ Save a copy` | also pull the full-res `.3FR` to the chosen folder |
+| Lens | read only: name, focal length (zoom range and current), focus near to ∞, live |
 
 Exposure controls follow the dial: in **S** the aperture is greyed, in **A** the shutter is,
 in **P** and full-auto both are, and M / Mq / video allow both. `Mq` has no live view by
@@ -81,6 +82,96 @@ describes — but only from a checkout; the packaged app never writes into `Cont
 There is no session without live view in Phocus, which is why a working Phocus
 cable-release trace contains no `op 1 / 0x0007` at all — the app gets the same effect by
 replaying the session with that one command omitted (`replay_session(live=False)`).
+
+---
+
+## Lens and focus readout
+
+The Lens tile's top line comes from three codes:
+
+* `0x0078 LensProductName`. HC lenses on the XH converter send none, although the
+  `.3FR` still gets `LensModel: HC 100`, so the tile then says "LENS".
+* `0x002e FocalLength`, pushed as a zoom turns, in steps of about 5 mm. Through the
+  converter it is already the effective length (the HC 100mm reads 80).
+* The range in `0x002e`'s descriptor, e.g. `MLi40,85,1` for the HC 50–110 on the
+  converter. Its maximum is low: that zoom reads up to 90, so the tile widens the range to
+  include whatever it has seen.
+
+**The converter is not visible over USB.** A full dump with the HC 50–110 on the XH
+Converter 0,8, diffed against the XCD 45P dump in
+[`PARAMETERS-LIVE.md`](PARAMETERS-LIVE.md), lists the same 87 codes. With or without a
+session open, the only lens-related differences are:
+
+| code | XCD 45P, direct | HC 50–110 + XH |
+|---|---|---|
+| `0x002e` FocalLength | 45, `MLi45,45,1` | 70, `MLi40,85,1`, effective (×0.8) |
+| `0x0078` LensProductName | `'XCD 45P'` | empty |
+| `0x0070` LensSerialNumber | `'16777215'` (0xFFFFFF, none) | `'1887'` |
+| `0x0008` Aperture descriptor | 11 stops | 13 stops, f/3.5 … f/25 |
+
+The rest are settings and counters. `0x0047`, range 2000–10000, looks like a white-balance
+Kelvin value. `0x004b LensProductID` is readable (1600414 for the HC 50–110) but not
+advertised.
+
+So the converter can only be inferred: an HC lens on an X body is necessarily on an XH
+adapter. Live, even that is unreliable. HC lenses send no name, and the serial number does
+not tell them apart: the lens that reported 65 mm (probably an HC 80, ×0.8) sends
+0xFFFFFF like the XCD. The `.3FR` names the lens (`LensModel: HC 100`) and records the
+effective focal length (80 mm), but no readable tag names the converter. Maker note
+`0x0018` differs between the two in byte 1 (`0x43` XCD, `0x03` HC) and byte 10 (`0x84`,
+`0x80`); with one lens of each kind, it cannot be told whether either marks the converter.
+
+The bottom line shows `0x0059 FocusPositionPercent`. Despite the name it is a fraction of
+the lens's travel: 0.0 at closest focus, 1.0 at infinity, in steps of about 0.001. It is a
+position, not a distance; the tile shows it as a percentage on a near-to-∞ track.
+
+* **The body pushes it only inside a tether session.** While the ring turns, `0x42` events
+  for `0x59` arrive several times a second. They come with live view on or off, but only
+  once the session has been replayed. Outside one, the value reads `-1.0` and nothing is
+  pushed, so the app now opens the session on connect in both modes (it used to wait for
+  the first shot with Save a copy when live view was on). Phocus reads it once at startup
+  and never polls; nor does the app.
+* **A lens change disarms it.** Detaching the lens pushes `0x59 = -1.0`, `0x3d = 0` and
+  focal length `0x2e = 0`. Reattaching pushes `0x3d = 1`, `0x2e`, `0x5b`, `0x71`, and the
+  lens name in `0x78`, but focus then stays at `-1.0` with no events. Waiting, re-sending
+  the focus describes (`0x54`, `0x59`, `0x5a`) and restarting live view do not bring it
+  back; replaying the session does. The app replays it when `0x3d = 1` arrives (about
+  5 s). Not on `0x78`: the HC 100mm on the XH Converter 0,8 attaches without a name.
+  Which of the session's commands does the re-arming has not been narrowed down.
+* **Only lenses that autofocus on the X bodies report a position.** Through the XH
+  Converter 0,8 the HC 50–110 sends focus like an XCD lens; the HC 100mm and another
+  lens reporting 65 mm send nothing. For those, `0x59` stays at `-1.0` even in a fresh
+  session, no events come as the ring turns, and no other parameter moves. The tile
+  then says "lens reports none" rather than a bare "--". What each attach sent:
+
+  | lens | `0x2e` focal length | `0x4a` firmware | `0x5b` | focus |
+  |---|---|---|---|---|
+  | XCD 45P | 45 | – | 35 | yes |
+  | HC 50–110 + XH | 40 → 60 → 65, follows the zoom | – | 70 | yes |
+  | HC 100mm + XH | 80 (100 × 0.8) | v13.0.0 | not sent | none |
+  | unknown, + XH | 65 | v10.0.0 | not sent | none |
+
+  `0x5b` came only with the lenses that report focus, and goes to 32767 on detach, so it
+  may mark AF capability; four lenses are too few to rely on it.
+* **`0x005a FocusDistanceScale`** reads six zeros with the X Extension 9mm between body
+  and lens, and `[40, 20, 60, 50, 110, 75]` with the XCD 45P mounted
+  directly. It arrives in pieces after an attach (`[40, 20, 0, 0, 0, 0]`, then the full
+  six), so it looks like three pairs read from the lens. It may be the lens's distance
+  scale, which could turn the position into metres; not decoded yet.
+* **The `.3FR` carries no focus distance either.** Four shots of the XCD 45P at positions
+  1.0, 0.78, 0.50 and 0.0, compared tag by tag:
+  * There is no `SubjectDistance`, and the scale's six numbers appear nowhere in the
+    maker notes or the file header.
+  * Maker note `0x0018`, byte 6, is a coarse focus step: 0, 3, 7, 14, which is
+    `round(14 × (1 − position))`.
+  * Maker note `0x0017`, bytes 14–15, a signed 16-bit value, also falls with closer
+    focus: 3, −1, −4, −10. It may be a close-focus exposure correction; unconfirmed.
+  * `Unknown_0x000f[0]`, which looked like focus at first, is the actual exposure time
+    in milliseconds: 1.6 s → 1682, 3.2 s → 3564. It only tracked focus because the
+    camera, in A mode, metered longer exposures closer in.
+
+  Decoding the scale needs ground truth: the position (`0x59`) read with the lens
+  focused on targets at measured distances.
 
 ---
 
